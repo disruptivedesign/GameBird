@@ -352,7 +352,7 @@ void Net::leave(){
   resetSession();
 }
 
-void Net::startMatch(uint32_t seed){
+void Net::startMatch(uint32_t seed, uint8_t rounds){
   if (_role != ROLE_HOST) return;
   _started = true;
   _matchPlayers = _playerCount;
@@ -361,6 +361,7 @@ void Net::startMatch(uint32_t seed){
   StartPayload sp{};
   sp.gameId = _gameId; sp.arenaW = _arenaW; sp.arenaH = _arenaH;
   sp.numPlayers = _playerCount; sp.seed = seed;
+  sp.rounds = rounds;
   for (int i = 0; i < NET_MAX_PLAYERS; i++){
     sp.colors[i*3]   = _colors[i].r;
     sp.colors[i*3+1] = _colors[i].g;

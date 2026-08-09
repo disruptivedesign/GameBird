@@ -149,6 +149,13 @@ struct StartPayload {
   uint8_t  numPlayers;
   uint32_t seed;
   uint8_t  colors[NET_MAX_PLAYERS * 3];   // resolved RGB per playerId
+
+  // Matches in this series, as the HOST chose it. Both roles count matches
+  // themselves and both decide independently when the series is over, so they
+  // have to be counting to the same number -- and only the host has the screen
+  // that picked it. 0 means "the game's own default", which is every game that
+  // does not offer the choice.
+  uint8_t  rounds;
 };
 
 #pragma pack(pop)

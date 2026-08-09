@@ -20,9 +20,14 @@
 #define VIRUS_TICK_MS      180   // sim tick period (~5.5 Hz); pacing dial
 #define VIRUS_STALL_WINDOW 24    // end if nothing NET changes over this many ticks
 #define VIRUS_HUD_ROWS     2     // rows below the board: territory bar + clock
-// Matches in a session, single-device and networked alike. Lives here rather
-// than in virus_app.h because the NetGame contract has to answer for it too.
+// Longest series a player can ask for, single-device and networked alike. Lives
+// here rather than in virus_app.h because the NetGame contract has to answer
+// for it too. The actual length is chosen before the match and clamped to this;
+// one round is the default, because a five-match series is a long sit for
+// somebody who only wanted to watch a virus run once.
 #define VIRUS_SERIES_ROUNDS 5
+#define VIRUS_ROUNDS_MIN    1
+#define VIRUS_ROUNDS_DEFAULT 1
 // State snapshot header, ahead of the packed cells: phase, winner, numPlayers,
 // arenaW, arenaH, then the tick as two bytes.
 #define VIRUS_STATE_HDR    7
@@ -38,6 +43,11 @@
 // were tuned against 64 cells and neither survives the move to 224 unchanged.
 #define VIRUS_FX_MS        60    // combat flash duration (a third of a tick), fades out over it
 #define VIRUS_SPORE_REACH  3     // how many tiles a Spore jumps (sensing + landing both use this)
+
+// How many fixed opening layouts there are. A series plays one per round, so
+// keeping this equal to VIRUS_SERIES_ROUNDS means a series shows each exactly
+// once; they are independent numbers and openings simply wrap if they differ.
+#define VIRUS_OPENINGS     5
 
 class Virus : public NetGame {
 public:
@@ -76,8 +86,23 @@ public:
   // code to run for anyone but itself. What crosses the wire is the decision
   // each rule reached: one entry per owned cell, in scan order, no cell indices.
   bool     lockstep()     const override { return true; }
-  uint8_t  seriesRounds() const override { return VIRUS_SERIES_ROUNDS; }
+  uint8_t  seriesRounds()    const override { return _rounds; }
+  uint8_t  maxSeriesRounds() const override { return VIRUS_SERIES_ROUNDS; }
+
+  // Clamped, so neither a lobby frame nor a caller that never set it can ask
+  // for a zero-match series (which would end before the first result screen)
+  // or one longer than there are openings to play.
+  void     setSeriesRounds(uint8_t rounds) override {
+    if      (rounds < VIRUS_ROUNDS_MIN)     _rounds = VIRUS_ROUNDS_MIN;
+    else if (rounds > VIRUS_SERIES_ROUNDS)  _rounds = VIRUS_SERIES_ROUNDS;
+    else                                    _rounds = rounds;
+  }
   uint16_t tickMs()       const override { return VIRUS_TICK_MS; }
+
+  // Pick the opening the next begin() lays out. Wraps, so a caller can hand it
+  // a round number without knowing how many openings exist.
+  void     setOpening(uint8_t round) override { _opening = (uint8_t)(round % VIRUS_OPENINGS); }
+  uint8_t  opening() const { return _opening; }
 
   // Client side. A "player" is still a rule, not a joystick -- LocalInput's x/y
   // go unused -- but button A rides along as World.button for whichever rule
@@ -149,7 +174,8 @@ private:
 
   uint8_t  _arenaW = 0, _arenaH = 0;
   uint8_t  _myId = 0, _numPlayers = 0;
-  uint32_t _seed = 0;
+  uint8_t  _opening = 0;                  // which fixed layout begin() seeds
+  uint8_t  _rounds  = VIRUS_ROUNDS_DEFAULT;   // matches in this series
   uint16_t _tick = 0;
   uint8_t  _phase = 0;                    // 0 = running, 1 = over
   uint8_t  _winner = NET_PID_NONE;

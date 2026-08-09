@@ -762,6 +762,241 @@ void test_adopting_a_board_recounts_territory(void) {
   TEST_ASSERT_EQUAL_UINT16(2, s.game.cellCount(1));
 }
 
+// ---- fixed openings --------------------------------------------------------
+// Unlike every test above, these read the board straight after begin() and
+// never call load() -- the seeds ARE what is under test, and load() overwrites
+// the whole board.
+
+// Where each virus was seeded for one (opening, roster size). Indexed by
+// player - 1; -1 means that virus was never placed.
+struct Opening {
+  int x[4], y[4];
+  int count;          // owned cells on the board in total
+};
+
+static Opening readOpening(uint8_t opening, uint8_t numPlayers) {
+  static const RuleFn rules[] = { ruleIdle, ruleIdle, ruleIdle, ruleIdle };
+  Scenario s;
+  s.game.setOpening(opening);
+  s.start(rules, numPlayers);
+  s.read();
+
+  Opening o;
+  o.count = 0;
+  for (int i = 0; i < 4; i++) { o.x[i] = -1; o.y[i] = -1; }
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) {
+      const uint8_t p = s.ownerAt(x, y);
+      if (p == OWNER_EMPTY || p == OWNER_NEUTRAL) continue;
+      o.count++;
+      if (p >= 1 && p <= 4) { o.x[p - 1] = x; o.y[p - 1] = y; }
+    }
+  return o;
+}
+
+// One seed per virus, nobody sharing a tile, at every roster size.
+void test_every_opening_seeds_one_cell_per_virus(void) {
+  for (uint8_t op = 0; op < VIRUS_OPENINGS; op++) {
+    for (uint8_t n = 1; n <= 4; n++) {
+      const Opening o = readOpening(op, n);
+      TEST_ASSERT_EQUAL_INT_MESSAGE((int)n, o.count,
+        "an opening must seed exactly one cell per virus");
+      for (int p = 0; p < (int)n; p++) {
+        TEST_ASSERT_TRUE_MESSAGE(o.x[p] >= 0, "a virus was left off the board");
+        for (int q = p + 1; q < (int)n; q++)
+          TEST_ASSERT_FALSE_MESSAGE(o.x[p] == o.x[q] && o.y[p] == o.y[q],
+            "two viruses were seeded onto the same tile");
+      }
+    }
+  }
+}
+
+// Inset by one on every side, so each virus opens with the same four legal
+// neighbours. A seed in a literal corner would have two, which is a handicap
+// rather than a difference in spacing.
+void test_openings_keep_every_seed_off_the_wall(void) {
+  for (uint8_t op = 0; op < VIRUS_OPENINGS; op++) {
+    for (uint8_t n = 1; n <= 4; n++) {
+      const Opening o = readOpening(op, n);
+      for (int p = 0; p < (int)n; p++) {
+        TEST_ASSERT_TRUE_MESSAGE(o.x[p] >= 1 && o.x[p] <= W - 2, "seed on a side wall");
+        TEST_ASSERT_TRUE_MESSAGE(o.y[p] >= 1 && o.y[p] <= H - 2, "seed on the top or bottom wall");
+      }
+    }
+  }
+}
+
+// A short roster takes the spots furthest apart, so two viruses never open the
+// match already touching.
+void test_two_viruses_never_start_next_to_each_other(void) {
+  for (uint8_t op = 0; op < VIRUS_OPENINGS; op++) {
+    const Opening o = readOpening(op, 2);
+    const int dx = o.x[0] - o.x[1], dy = o.y[0] - o.y[1];
+    TEST_ASSERT_TRUE_MESSAGE(dx * dx + dy * dy > 1,
+      "a two-virus roster must not start orthogonally adjacent");
+  }
+}
+
+// Slot assignment rotates with the opening, so one virus never plays the same
+// spot twice in a series. Without this, part of a virus's score is just where
+// it happened to sit -- the find* helpers stop at the first hit and drift north
+// and east, so the spots are not interchangeable.
+void test_a_series_moves_every_virus_around_the_board(void) {
+  int xs[VIRUS_OPENINGS], ys[VIRUS_OPENINGS];
+  for (uint8_t op = 0; op < VIRUS_OPENINGS; op++) {
+    const Opening o = readOpening(op, 4);
+    xs[op] = o.x[0]; ys[op] = o.y[0];          // virus A
+  }
+  for (int i = 0; i < VIRUS_OPENINGS; i++)
+    for (int j = i + 1; j < VIRUS_OPENINGS; j++)
+      TEST_ASSERT_FALSE_MESSAGE(xs[i] == xs[j] && ys[i] == ys[j],
+        "virus A started twice in the same spot inside one series");
+}
+
+// setOpening() takes a round number and wraps, so a caller never has to know
+// how many openings exist.
+void test_opening_wraps_past_the_last_one(void) {
+  const Opening first   = readOpening(0, 4);
+  const Opening wrapped = readOpening(VIRUS_OPENINGS, 4);
+  for (int p = 0; p < 4; p++) {
+    TEST_ASSERT_EQUAL_INT(first.x[p], wrapped.x[p]);
+    TEST_ASSERT_EQUAL_INT(first.y[p], wrapped.y[p]);
+  }
+}
+
+// The one opening pinned to exact tiles, so the diagonal-first ordering that
+// every roster size depends on cannot drift unnoticed: TL, BR, TR, BL.
+void test_the_corner_opening_puts_one_virus_in_each_corner(void) {
+  const Opening o = readOpening(0, 4);
+  TEST_ASSERT_EQUAL_INT(1,     o.x[0]);  TEST_ASSERT_EQUAL_INT(1,     o.y[0]);
+  TEST_ASSERT_EQUAL_INT(W - 2, o.x[1]);  TEST_ASSERT_EQUAL_INT(H - 2, o.y[1]);
+  TEST_ASSERT_EQUAL_INT(W - 2, o.x[2]);  TEST_ASSERT_EQUAL_INT(1,     o.y[2]);
+  TEST_ASSERT_EQUAL_INT(1,     o.x[3]);  TEST_ASSERT_EQUAL_INT(H - 2, o.y[3]);
+}
+
+// A bare grower that rotates its scan with the tick -- the behaviour under
+// test. Deliberately NOT decideA: the starters exist to be rewritten, and a
+// fairness test must not break the first time somebody improves one.
+static Decision ruleGrowRotating(const Cell& me, const World& world) {
+  Dir d = Dir::N;
+  if (me.findOpen(d, (Dir)(world.tick & 3)) && me.canGrow(d)) return Action::grow(d);
+  return Action::idle();
+}
+
+// The same rule with its scan pinned north, which is what the drift looks like.
+static Decision ruleGrowFixed(const Cell& me, const World&) {
+  Dir d = Dir::N;
+  if (me.findOpen(d) && me.canGrow(d)) return Action::grow(d);
+  return Action::idle();
+}
+
+static int cornerSpread(RuleFn r, int ticks) {
+  const RuleFn rules[] = { r, r, r, r };
+  Scenario s;
+  s.game.setOpening(0);      // one virus per corner
+  s.start(rules, 4);
+  s.tick(ticks);
+  s.read();
+  int lo = 9999, hi = 0;
+  for (uint8_t p = 1; p <= 4; p++) {
+    const int c = s.cellCount(p);
+    if (c < lo) lo = c;
+    if (c > hi) hi = c;
+  }
+  return hi - lo;
+}
+
+// findOpen begins where it is told and wraps, which is the whole mechanism --
+// the same open field yields a different direction as the tick advances.
+void test_find_open_starts_where_it_is_told(void) {
+  Cell me;
+  memset(&me, 0, sizeof(me));
+  me.strength = Strength::Normal;
+  me.energy   = 8;
+  for (int i = 0; i < 4; i++) me.n[i].occupant = Occupant::Empty;
+
+  Dir d = Dir::N;
+  for (int s = 0; s < 4; s++) {          // wide open: it takes the one asked for
+    TEST_ASSERT_TRUE(me.findOpen(d, (Dir)s));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(s, (int)d, "findOpen ignored its start direction");
+  }
+
+  for (int i = 1; i < 4; i++) me.n[i].occupant = Occupant::Wall;
+  for (int s = 0; s < 4; s++) {          // only North open: every start wraps to it
+    TEST_ASSERT_TRUE(me.findOpen(d, (Dir)s));
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)Dir::N, (int)d, "findOpen failed to wrap");
+  }
+
+  // Omitting the argument still means the original N,E,S,W order, so every rule
+  // written before this existed behaves exactly as it did.
+  for (int i = 0; i < 4; i++) me.n[i].occupant = Occupant::Empty;
+  TEST_ASSERT_TRUE(me.findOpen(d));
+  TEST_ASSERT_EQUAL_INT((int)Dir::N, (int)d);
+}
+
+// Four identical viruses, one per corner of a square board. The corners are
+// equivalent positions, so a fair rule should finish them near-level -- and a
+// rule that always looks north should not, because a fixed preference breaks
+// the board's symmetry (north-west is against the rim after one step, south-east
+// has the whole board ahead of it).
+//
+// Measured when this was written: fixed scan 13/17/15/19, rotating 15/16/16/17.
+// The comparison is the real assertion; the absolute bound is a tripwire.
+void test_rotating_the_scan_levels_out_the_corners(void) {
+  const int rotating = cornerSpread(ruleGrowRotating, 30);
+  const int fixed    = cornerSpread(ruleGrowFixed,    30);
+  TEST_ASSERT_LESS_THAN_INT_MESSAGE(fixed, rotating,
+    "a rotating scan must even the corners out more than a fixed N,E,S,W one");
+  TEST_ASSERT_LESS_OR_EQUAL_INT_MESSAGE(3, rotating,
+    "corner-to-corner spread has grown -- the scan rotation may have regressed");
+}
+
+// The series length is chosen before a match and clamped, because it arrives
+// from two places that can both get it wrong: a setup screen, and a lobby frame
+// from another device. A zero would end the series before its first result
+// screen; anything past VIRUS_OPENINGS would ask for a layout that does not
+// exist.
+void test_series_length_is_clamped_to_something_playable(void) {
+  Virus g;
+
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(VIRUS_ROUNDS_DEFAULT, g.seriesRounds(),
+    "a Virus that was never told should default to the short series");
+
+  for (uint8_t r = VIRUS_ROUNDS_MIN; r <= VIRUS_SERIES_ROUNDS; r++) {
+    g.setSeriesRounds(r);
+    TEST_ASSERT_EQUAL_UINT8(r, g.seriesRounds());
+  }
+
+  g.setSeriesRounds(0);                       // an old or silent lobby frame
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(VIRUS_ROUNDS_MIN, g.seriesRounds(),
+    "0 rounds would end the series before a single match was played");
+
+  g.setSeriesRounds(200);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(VIRUS_SERIES_ROUNDS, g.seriesRounds(),
+    "a series must not outrun the openings there are to play");
+
+  // seriesRounds() is what the shell counts to, and maxSeriesRounds() is what
+  // the lobby offers -- non-zero is what tells it to draw a picker at all.
+  TEST_ASSERT_EQUAL_UINT8(VIRUS_SERIES_ROUNDS, g.maxSeriesRounds());
+}
+
+// Every length a player can pick has an opening to play, and each round of a
+// series draws a different one.
+void test_every_round_of_a_series_has_its_own_opening(void) {
+  for (uint8_t rounds = VIRUS_ROUNDS_MIN; rounds <= VIRUS_SERIES_ROUNDS; rounds++) {
+    int xs[VIRUS_SERIES_ROUNDS], ys[VIRUS_SERIES_ROUNDS];
+    for (uint8_t round = 0; round < rounds; round++) {
+      const Opening o = readOpening(round, 4);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(4, o.count, "a round seeded the wrong number of viruses");
+      xs[round] = o.x[0]; ys[round] = o.y[0];
+    }
+    for (int i = 0; i < (int)rounds; i++)
+      for (int j = i + 1; j < (int)rounds; j++)
+        TEST_ASSERT_FALSE_MESSAGE(xs[i] == xs[j] && ys[i] == ys[j],
+          "two rounds of the same series opened on the same board");
+  }
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -791,5 +1026,15 @@ int main(int, char**) {
   RUN_TEST(test_adopting_a_board_recounts_territory);
   RUN_TEST(test_16x16_snapshot_fits_one_frame);
   RUN_TEST(test_state_round_trips_every_cell_value);
+  RUN_TEST(test_every_opening_seeds_one_cell_per_virus);
+  RUN_TEST(test_openings_keep_every_seed_off_the_wall);
+  RUN_TEST(test_two_viruses_never_start_next_to_each_other);
+  RUN_TEST(test_a_series_moves_every_virus_around_the_board);
+  RUN_TEST(test_opening_wraps_past_the_last_one);
+  RUN_TEST(test_the_corner_opening_puts_one_virus_in_each_corner);
+  RUN_TEST(test_find_open_starts_where_it_is_told);
+  RUN_TEST(test_rotating_the_scan_levels_out_the_corners);
+  RUN_TEST(test_series_length_is_clamped_to_something_playable);
+  RUN_TEST(test_every_round_of_a_series_has_its_own_opening);
   return UNITY_END();
 }

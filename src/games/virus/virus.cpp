@@ -8,11 +8,9 @@
 #define VIRUS_TELEMETRY 1
 #endif
 
-// Small deterministic PRNG (xorshift32) for seed-varied spawns. Kept local so
-// the whole sim stays reproducible from (seed, roster) with no libc rand().
-static inline uint32_t virusRand(uint32_t& s) {
-  s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s;
-}
+// Openings used to be rolled from the seed. They are a lookup now -- see
+// openingSpot() below -- so nothing here needs a PRNG and the whole sim is
+// reproducible from (opening, roster) alone.
 
 // ---- ruleset tunables (spec §12) -------------------------------------------
 // Energy is PER CELL. A virus earns an income every tick, that income is split
@@ -185,10 +183,85 @@ void Virus::setLocalRule(RuleFn fn, uint8_t virusIdx) {
   _localIdx  = virusIdx;
 }
 
+// ============================================================================
+//  Fixed openings
+// ============================================================================
+//  Where a virus starts is a lookup, not a roll: the same roster on the same
+//  opening replays the identical match, which is the whole point -- you cannot
+//  compare two rules if they were handed different boards. VirusApp and
+//  Multiplayer both pass the round number to setOpening(), so a series walks
+//  the openings in order and both ends of a networked match agree on the board
+//  without another word crossing the wire.
+//
+//  Every spot is inset one tile from the wall so each seed opens with the same
+//  four legal neighbours. A seed in a literal corner would start with two --
+//  that is a different handicap per position rather than a difference in
+//  spacing, and spacing is the only thing these are meant to vary.
+//
+//  Spots are listed DIAGONAL-FIRST so the first n are as far apart as the shape
+//  allows: two viruses take opposite corners, never adjacent ones. Opening 4 is
+//  the exception and divides the bottom wall evenly for whatever n is, since a
+//  row can be split properly for any count.
+//
+//    0  corners                  1  wall middles      2  quadrant centres
+//    3  a 2x2 block dead centre  4  evenly spaced along the bottom wall
+//
+//  `slot` is 0..n-1 and has already been rotated by the caller.
+static void openingSpot(uint8_t opening, int slot, int n,
+                        int W, int H, int& x, int& y) {
+  const int L    = 1,         R    = W - 2;            // one tile in from
+  const int T    = 1,         B    = H - 2;            // each wall
+  const int midX = W / 2,     midY = H / 2;
+  const int qx0  = W / 4,     qx1  = W - 1 - W / 4;    // quadrant centres,
+  const int qy0  = H / 4,     qy1  = H - 1 - H / 4;    // symmetric about middle
+  const int cx   = W / 2 - 1, cy   = H / 2 - 1;        // top-left of centre 2x2
+
+  switch (opening) {
+    case 0: {   // corners: TL, BR, TR, BL
+      const int xs[4] = { L, R, R, L };
+      const int ys[4] = { T, B, T, B };
+      x = xs[slot]; y = ys[slot];
+      break;
+    }
+    case 1: {   // wall middles: top, bottom, left, right
+      const int xs[4] = { midX, midX, L,    R    };
+      const int ys[4] = { T,    B,    midY, midY };
+      x = xs[slot]; y = ys[slot];
+      break;
+    }
+    case 2: {   // quadrant centres: TL, BR, TR, BL
+      const int xs[4] = { qx0, qx1, qx1, qx0 };
+      const int ys[4] = { qy0, qy1, qy0, qy1 };
+      x = xs[slot]; y = ys[slot];
+      break;
+    }
+    case 3: {   // the centre 2x2, diagonal pair first
+      const int xs[4] = { cx, cx + 1, cx + 1, cx     };
+      const int ys[4] = { cy, cy + 1, cy,     cy + 1 };
+      x = xs[slot]; y = ys[slot];
+      break;
+    }
+    default: {  // 4: n seeds spread evenly along the bottom wall
+      x = ((2 * slot + 1) * W) / (2 * n);
+      y = B;
+      break;
+    }
+  }
+
+  // The even split above can land on the rim of a narrow board (n=4 on a
+  // 8-wide one puts the last seed at x=7, which is the wall), so every opening
+  // is pinned back inside the inset box rather than trusting the arithmetic.
+  if (x < L) x = L;
+  if (x > R) x = R;
+  if (y < T) y = T;
+  if (y > B) y = B;
+}
+
 void Virus::begin(uint8_t arenaW, uint8_t arenaH, uint8_t myId,
                   uint8_t numPlayers, uint32_t seed, const CRGB* colors) {
+  (void)seed;   // openings are fixed now -- nothing here is rolled
   _arenaW = arenaW; _arenaH = arenaH;
-  _myId = myId; _numPlayers = numPlayers; _seed = seed;
+  _myId = myId; _numPlayers = numPlayers;
 
   // Networked: place our one rule now that the lobby has told us which player
   // we are. Everyone else's slot stays null, which is exactly what makes
@@ -221,23 +294,24 @@ void Virus::begin(uint8_t arenaW, uint8_t arenaH, uint8_t myId,
   memset(_netEnergy, 0,           sizeof(_netEnergy));
   for (int i = 0; i < NET_MAX_PLAYERS; i++) _pending[i].valid = false;
 
-  // Seed one cell per player. Each player owns a board quadrant and drops its
-  // seed at a seed-chosen cell inside it (inset one tile from the edge so it
-  // starts with 4 legal neighbours). Quadrant order spreads players out: 2
-  // players land in diagonal quadrants. Randomising WITHIN the quadrant is what
-  // makes rematches differ -- with position-blind rules on a symmetric board,
-  // a fixed corner start would replay the exact same match every time.
-  const int hw = arenaW / 2, hh = arenaH / 2;
-  const int qx0[4] = { 1,  hw,        hw,        1        };  // TL, BR, TR, BL
-  const int qx1[4] = { hw - 1, arenaW - 2, arenaW - 2, hw - 1 };
-  const int qy0[4] = { 1,  hh,        1,         hh       };
-  const int qy1[4] = { hh - 1, arenaH - 2, hh - 1,     arenaH - 2 };
-  uint32_t rng = seed ? seed : 0xA5A5A5A5u;   // xorshift stalls at 0
-  for (uint8_t p = 0; p < numPlayers && p < 4; p++) {
-    int rx = qx0[p] + (int)(virusRand(rng) % (uint32_t)(qx1[p] - qx0[p] + 1));
-    int ry = qy0[p] + (int)(virusRand(rng) % (uint32_t)(qy1[p] - qy0[p] + 1));
-    int c  = ry * arenaW + rx;
-    _owner[c]    = p + 1;
+  // Seed one cell per player from the fixed opening, one spot each.
+  //
+  // WHICH virus gets which spot rotates with the opening, so over a series each
+  // one plays every position. That is not decoration: the find* helpers scan
+  // N,E,S,W and stop at the first hit, so a rule built on them drifts north and
+  // east, and the spot with the most room that way is worth real cells. Pin a
+  // virus to one corner for all five matches and part of its score is where it
+  // sat. Rotating by the opening costs nothing and takes that out.
+  //
+  // The rotation is modulo n, not 4, so a two-virus roster swaps its two spots
+  // instead of rotating onto positions nobody is using.
+  const int n = (numPlayers < 4) ? (int)numPlayers : 4;
+  for (int p = 0; p < n; p++) {
+    const int slot = (p + (int)_opening) % n;
+    int x = 0, y = 0;
+    openingSpot(_opening, slot, n, arenaW, arenaH, x, y);
+    const int c  = y * arenaW + x;
+    _owner[c]    = (uint8_t)(p + 1);
     _strength[c] = VIRUS_START_STRENGTH;
   }
 }
@@ -289,7 +363,12 @@ size_t Virus::decideLocal(uint8_t* buf, size_t cap, bool buttonA) {
   if (cap < need) return 0;
   memset(buf, 0, need);
 
+  // _tick is the one the host will run next: it published this board AFTER
+  // advancing, so the number adopted with the board is the number the host's
+  // own rules will see. Both ends therefore hand their rules the same tick,
+  // which is what makes it safe to steer a decision by it.
   World world; world.phase = phaseNow(_sOwner); world.button.held = buttonA;
+  world.tick = _tick;
   for (int i = 0; i < n; i++) {
     const int c = _owned[i];
     // _netEnergy is what the host says this cell may spend -- already credited
@@ -483,7 +562,11 @@ void Virus::hostTick() {
   // percentages (no floating point, for determinism). Empty tiles only shrink
   // over a match, so board-fill rises monotonically; taking the max of the two
   // makes a fast-saturating game reach End early, tracking the real pace.
+  // _tick is still this tick's number here -- it is not advanced until the end
+  // of hostTick -- which is exactly the value a client was handed with the
+  // board it is deciding against. See the matching note in serializeInput.
   World world; world.phase = phaseNow(_sOwner); world.button.held = _buttonA;
+  world.tick = _tick;
 
   uint8_t req[NET_MAX_PLAYERS]  = { 0 };  // non-idle actions a player wanted
   uint8_t fund[NET_MAX_PLAYERS] = { 0 };  // how many the cells could pay for

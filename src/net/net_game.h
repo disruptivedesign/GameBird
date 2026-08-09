@@ -82,6 +82,29 @@ public:
   // Any other N ends the session on a final standings screen after N matches.
   virtual uint8_t seriesRounds() const { return 0; }
 
+  // Longest series this game will accept, or 0 if the length is not the
+  // player's to choose. The lobby shows its picker only when this is non-zero,
+  // which keeps the shell from having to know which games have series.
+  virtual uint8_t maxSeriesRounds() const { return 0; }
+
+  // Ask for a series length, for a game that lets one be chosen. Ignored by
+  // default, and a game is free to clamp what it is given. Set before begin().
+  //
+  // In a networked match only the host has the screen that picks it, so the
+  // number travels in MSG_START and every client applies it here -- both roles
+  // decide when the series is over on their own, and they have to agree.
+  virtual void setSeriesRounds(uint8_t rounds) { (void)rounds; }
+
+  // Which fixed starting layout the NEXT begin() should lay out, for a game
+  // that has them. Called with the round number before every match, so a series
+  // walks its layouts in order. Default ignores it, which is every game whose
+  // start is the same each time or is decided by the seed alone.
+  //
+  // It rides here rather than in begin()'s arguments because both ends of a
+  // networked match have to pick the same one, and the round number is already
+  // something they agree on without another word crossing the wire.
+  virtual void setOpening(uint8_t round) { (void)round; }
+
   // ---- co-op ----------------------------------------------------------------
   // A game the players win or LOSE TOGETHER. Default false, because every game
   // up to Swarm had exactly one winner and the runners were built around that:

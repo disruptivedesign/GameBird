@@ -96,7 +96,9 @@ public:
   void host(uint8_t gameId, uint8_t maxPlayers, uint8_t arenaW, uint8_t arenaH);
   bool join(const LobbyInfo& l);
   void leave();
-  void startMatch(uint32_t seed);     // host only: broadcast START
+  // Host only: broadcast START. `rounds` is the series length the host picked;
+  // 0 leaves it to the game's own default.
+  void startMatch(uint32_t seed, uint8_t rounds = 0);
   void reopen();                      // host only: back to an open lobby after a match
 
   NetRole role()         const { return _role; }

@@ -2,6 +2,7 @@
 #include "core/palette.h"
 #include "match/match_shell.h"
 #include "ui/scoreboard.h"
+#include "ui/widgets.h"
 #include "audio/sfx.h"
 #include <esp_random.h>
 
@@ -9,6 +10,7 @@
 #define VIRUS_SETUP_SLOTS  5
 #define LETTER_ROW         4      // the 3x5 letter naming each virus
 #define BAR_ROW           11      // in/out bar beneath it
+#define ROUNDS_ROW        13      // series-length pips, between the bars and GO
 
 // ---- Live HUD ---------------------------------------------------------------
 // Two rows off the bottom of the board: a territory bar and a match clock.
@@ -93,11 +95,24 @@ GameStatus VirusApp::service() {
 
 // SETUP: left/right moves the cursor across the four viruses and a GO slot; A
 // toggles the highlighted virus in/out, or starts the match from GO (needs >=2
-// viruses). B exits to the main menu.
+// viruses). UP/DOWN sets how many matches the series runs. B exits to the main
+// menu.
 void VirusApp::serviceSetup() {
   if (int8_t s = _sys.joy.stepX()) {
     _cursor = (_cursor + s + VIRUS_SETUP_SLOTS) % VIRUS_SETUP_SLOTS;
     _sys.audio.play(SFX_MOVE);
+  }
+
+  // Series length on the other axis, so it needs no slot of its own and cannot
+  // be missed on the way to GO. stepY is screen space -- positive is DOWN a row
+  // -- and pushing UP for more rounds is the way round that matches the bar
+  // filling upward.
+  if (int8_t s = _sys.joy.stepY()) {
+    const int want = (int)_rounds - s;
+    if (want >= VIRUS_ROUNDS_MIN && want <= VIRUS_SERIES_ROUNDS) {
+      _rounds = (uint8_t)want;
+      _sys.audio.play(SFX_MOVE);
+    }
   }
 
   if (_sys.buttonB.wasPressed()) { _sys.audio.play(SFX_BACK); _wantExit = true; return; }
@@ -133,6 +148,11 @@ void VirusApp::serviceSetup() {
       for (int k = 0; k < 3; k++) disp().setPixel(x + k, 0, CRGB(255, 255, 255));
   }
 
+  // Series length, on the one free row between the in/out bars and GO: five
+  // pips, lit up to the chosen count. A count reads better as "how many are
+  // on" than as "which one is highlighted", so this is not drawSelectorDots.
+  drawCountPips(disp(), ROUNDS_ROW, VIRUS_SERIES_ROUNDS, _rounds);
+
   // GO bar across the bottom: green when startable (bright if focused), else red.
   const bool startable = selectedCount() >= 2;
   const CRGB go = startable ? (_cursor == 4 ? CRGB(0, 255, 0) : CRGB(0, 70, 0))
@@ -161,6 +181,11 @@ void VirusApp::startMatch() {
   }
   for (int i = _numPlayers; i < NET_MAX_PLAYERS; i++) _voice[i] = nullptr;
   _game.setRoster(rules, idx, _numPlayers);
+  _game.setSeriesRounds(_rounds);
+  // One opening per round, so a full-length series shows each of the five
+  // exactly once and every virus has been through every starting spot. A
+  // shorter series simply plays the first _rounds of them.
+  _game.setOpening(_roundsPlayed);
   _game.begin(_game.arenaW(), _game.arenaH(), 0, _numPlayers, esp_random(), _colors);
 
   _winRecorded = false;
@@ -248,8 +273,8 @@ void VirusApp::serviceResult(uint32_t now) {
 
   if (_sys.buttonB.wasPressed()) { endSeriesEarly(); return; }  // end the series, keep the tally
   if (matchResultReleased(el, _sys.buttonA.wasPressed())) {
-    if (_roundsPlayed >= VIRUS_SERIES_ROUNDS) { _resultStart = now; _state = SERIES_OVER; }
-    else                                        startMatch();  // next round, same roster
+    if (_roundsPlayed >= _rounds) { _resultStart = now; _state = SERIES_OVER; }
+    else                            startMatch();  // next round, same roster
   }
 }
 

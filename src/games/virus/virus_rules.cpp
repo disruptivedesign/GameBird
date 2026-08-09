@@ -208,22 +208,47 @@
 //  me.canFortify()         can pay the 1 and you are not already Strongest
 //  me.canAttack(d)         can pay the 1 and there is an enemy that way
 //
-//  WHAT IS AROUND ME? -- terrain only, no money involved.
-//  me.findOpen(d)          sets d to the first open direction (grow or move);
+//  WHAT IS AROUND ME? -- terrain only, no money involved. Each takes an
+//  optional second argument saying where to start looking; see WHICH WAY FIRST
+//  below.
+//  me.findOpen(d, from)    sets d to the first open direction (grow or move);
 //                          false if you are boxed in
-//  me.findSporeTarget(d)   sets d to the first sporeable direction; false if
-//                          every landing spot is blocked or off the board
-//  me.findWeakestEnemy(d)  sets d to the softest adjacent enemy; false if none
-//  me.findStrongestEnemy(d) sets d to the toughest adjacent enemy; false if none
+//  me.findSporeTarget(d, from)   sets d to the first sporeable direction; false
+//                          if every landing spot is blocked or off the board
+//  me.findWeakestEnemy(d, from)  sets d to the softest adjacent enemy; false if
+//                          none. `from` settles equally weak ones
+//  me.findStrongestEnemy(d, from) sets d to the toughest adjacent enemy; false
+//                          if none
 //  me.countAdjacent(o)     how many neighbours are Occupant o. For example
 //                          countAdjacent(Occupant::Empty) == 0 means this cell
 //                          is on no frontier -- a good test for "I am interior,
 //                          so fortify or sit this one out"
 //
-//  Every find* helper scans N, E, S, W and stops at the first hit, so a virus
-//  built purely on them drifts north and east. Writing your own loop -- or
-//  choosing by neighbour strength, or by enemy_id -- is where the interesting
-//  strategies start.
+//  WHICH WAY FIRST. Every find* helper stops at the first neighbour that
+//  qualifies, so when two would do, the order it looks in decides. Leave `from`
+//  out and that order is always N,E,S,W -- a cell in open ground grows north
+//  every time and the whole virus leans north-east.
+//
+//  That lean is not only untidy, it decides matches. Four identical viruses in
+//  four corners are not in equal positions if all of them prefer north: the one
+//  in the north-west is against the rim after a single step while the one in
+//  the south-east has the length of the board ahead of it. Measured on the test
+//  board, a north-pinned virus in the best corner finishes with 46% more ground
+//  than the same virus in the worst one.
+//
+//  Handing `from` the tick walks the preferred direction round the compass, so
+//  over any four ticks each direction leads once:
+//
+//      const Dir scan = (Dir)(world.tick & 3);
+//      if (me.findOpen(d, scan) && me.canGrow(d)) return Action::grow(d);
+//
+//  That is what all four starters do, and it drops the corner-to-corner spread
+//  from 46% to 13%. The rest is because every cell turns together on the same
+//  tick; killing it entirely would need cells to differ from each other within
+//  a tick, and a cell cannot tell where it is.
+//
+//  Writing your own loop -- or choosing by neighbour strength, or by enemy_id
+//  -- is where the interesting strategies start.
 //
 //  You return an Action, and that is the whole of it:
 //      return Action::grow(d);
@@ -263,31 +288,41 @@
 //      canAffordGrow() and idle when it is false and the cell expands instead.
 //    * It attacks the STRONGEST neighbour, which takes the most hits to kill.
 //      findWeakestEnemy(d) is right there and actually finishes cells off.
-//    * It ignores `world`. Phase tells you how far along the match is -- there
-//      is a case for expanding Early and fighting at the End.
+//    * It reads world.tick and nothing else. Phase tells you how far along the
+//      match is -- there is a case for expanding Early and fighting at the End.
 //    * It never uses Move or Spore. Move steps a cell out of a fight for 1,
 //      keeping its strength and its savings; Spore leaps a blockade entirely
 //      for 6. Nothing here touches either -- see the ACTIONS section above.
-//    * Every find* helper scans N,E,S,W and stops at the first hit, so all four
-//      viruses drift north and east. Your own loop does better.
+//    * It looks in one direction per tick, the same one for every cell it owns.
+//      Turning the whole virus at once is only the cheapest way to stop leaning
+//      north-east; choosing per cell, by what each one can see, is better.
+//
+//  One thing NOT to undo: the rotating scan (see WHICH WAY FIRST). Pin the scan
+//  back to north and you will look faster in a corner that suits it and worse
+//  in one that does not, which tells you nothing about the rule you wrote.
 // ============================================================================
 
 
 // ------------------------------- Virus A - Blue -----------------------------
 // Basic implementation of virus.
 Decision decideA(const Cell& me, const World& world) {
-  (void)world;   // this starter ignores the phase -- see THE FOUR STARTERS above
+  // Walk the preferred scan direction round the compass, a step per tick, so
+  // this virus spreads evenly instead of leaning north-east. Every virus reads
+  // the same tick, so the rotation is identical for all four and costs nobody
+  // anything -- what it removes is the accident of WHERE a virus was seeded
+  // mattering more than what its rule does.
+  const Dir scan = (Dir)(world.tick & 3);
 
   // Our direction variable
   Dir d = Dir::N;
 
   // If there is open ground, and we have enough energy to grow into it, do so.
-  if (me.findOpen(d) && me.canGrow(d)){
+  if (me.findOpen(d, scan) && me.canGrow(d)){
     return Action::grow(d);
   }
 
   // No where to grow, attack the strongest enemy.
-  if (me.findStrongestEnemy(d) && me.canAttack(d)){
+  if (me.findStrongestEnemy(d, scan) && me.canAttack(d)){
     return Action::attack(d);
   }
 
@@ -302,18 +337,18 @@ Decision decideA(const Cell& me, const World& world) {
 
 // ------------------------------- Virus B - Orange ---------------------------
 Decision decideB(const Cell& me, const World& world) {
-  (void)world;
+  const Dir scan = (Dir)(world.tick & 3);   // rotate the scan -- see decideA
 
   // Our direction variable
   Dir d = Dir::N;
 
   // If there is open ground, and we have enough energy to grow into it, do so.
-  if (me.findOpen(d) && me.canGrow(d)){
+  if (me.findOpen(d, scan) && me.canGrow(d)){
     return Action::grow(d);
   }
 
   // No where to grow, attack the strongest enemy.
-  if (me.findStrongestEnemy(d) && me.canAttack(d)){
+  if (me.findStrongestEnemy(d, scan) && me.canAttack(d)){
     return Action::attack(d);
   }
 
@@ -328,18 +363,18 @@ Decision decideB(const Cell& me, const World& world) {
 
 // ------------------------------- Virus C - Cyan -----------------------------
 Decision decideC(const Cell& me, const World& world) {
-  (void)world;
+  const Dir scan = (Dir)(world.tick & 3);   // rotate the scan -- see decideA
 
   // Our direction variable
   Dir d = Dir::N;
 
   // If there is open ground, and we have enough energy to grow into it, do so.
-  if (me.findOpen(d) && me.canGrow(d)){
+  if (me.findOpen(d, scan) && me.canGrow(d)){
     return Action::grow(d);
   }
 
   // No where to grow, attack the strongest enemy.
-  if (me.findStrongestEnemy(d) && me.canAttack(d)){
+  if (me.findStrongestEnemy(d, scan) && me.canAttack(d)){
     return Action::attack(d);
   }
 
@@ -354,18 +389,18 @@ Decision decideC(const Cell& me, const World& world) {
 
 // ------------------------------- Virus D - Purple ---------------------------
 Decision decideD(const Cell& me, const World& world) {
-  (void)world;
+  const Dir scan = (Dir)(world.tick & 3);   // rotate the scan -- see decideA
 
   // Our direction variable
   Dir d = Dir::N;
 
   // If there is open ground, and we have enough energy to grow into it, do so.
-  if (me.findOpen(d) && me.canGrow(d)){
+  if (me.findOpen(d, scan) && me.canGrow(d)){
     return Action::grow(d);
   }
 
   // No where to grow, attack the strongest enemy.
-  if (me.findStrongestEnemy(d) && me.canAttack(d)){
+  if (me.findStrongestEnemy(d, scan) && me.canAttack(d)){
     return Action::attack(d);
   }
 

@@ -174,28 +174,58 @@ struct Cell {
     return c;
   }
 
+  // ---- WHERE DO I LOOK FIRST? ----------------------------------------------
+  //
+  // Every find* helper below scans all four neighbours and stops at the first
+  // one that qualifies, so when two directions both qualify the SCAN ORDER
+  // decides. Leave `from` alone and that order is always N,E,S,W, which means a
+  // cell in open ground grows north every single time and a whole virus drifts
+  // north-east.
+  //
+  // That drift is not just untidy, it is unfair: it breaks the board's own
+  // symmetry. Four identical viruses in four corners are NOT in equivalent
+  // positions if all of them prefer north -- the one in the north-west is
+  // against the rim after one step while the one in the south-east has the
+  // whole board ahead of it.
+  //
+  // Pass `from` to start the scan somewhere else. Handing it world.tick walks
+  // the preferred direction round the compass, so over any four ticks each
+  // direction is favoured once and growth spreads evenly instead of leaning:
+  //
+  //     me.findOpen(d, (Dir)(world.tick & 3))
+  //
+  // The default is the old N,E,S,W order, so rules that ignore `from` behave
+  // exactly as they always did -- including the drift, which is left in as
+  // something to notice and fix.
+
   // First open-ground neighbour (Empty or Neutral). Returns true and sets `out`
   // to a direction you can Grow or Move into; false if you are boxed in.
-  bool findOpen(Dir& out) const {
-    for (uint8_t d = 0; d < 4; d++)
+  bool findOpen(Dir& out, Dir from = Dir::N) const {
+    for (uint8_t i = 0; i < 4; i++) {
+      const uint8_t d = ((uint8_t)from + i) & 3;
       if (n[d].isEmpty() || n[d].isNeutral()) { out = (Dir)d; return true; }
+    }
     return false;
   }
 
   // First direction you could Spore into (open tile three steps away). Returns
   // true and sets `out`; false if every landing spot is blocked or off-board.
-  bool findSporeTarget(Dir& out) const {
-    for (uint8_t d = 0; d < 4; d++)
+  bool findSporeTarget(Dir& out, Dir from = Dir::N) const {
+    for (uint8_t i = 0; i < 4; i++) {
+      const uint8_t d = ((uint8_t)from + i) & 3;
       if (far_open[d]) { out = (Dir)d; return true; }
+    }
     return false;
   }
 
   // Weakest neighbouring enemy. Returns true and sets `out` to its direction;
-  // false if no enemy is adjacent. Ties pick the first in N,E,S,W order.
-  bool findWeakestEnemy(Dir& out) const {
+  // false if no enemy is adjacent. Equally weak enemies are settled by the scan
+  // order, so `from` decides those the same way it decides an open field.
+  bool findWeakestEnemy(Dir& out, Dir from = Dir::N) const {
     bool found = false;
     Strength best = Strength::Strongest;
-    for (uint8_t d = 0; d < 4; d++) {
+    for (uint8_t i = 0; i < 4; i++) {
+      const uint8_t d = ((uint8_t)from + i) & 3;
       if (!n[d].isEnemy()) continue;
       if (!found || n[d].strength < best) { best = n[d].strength; out = (Dir)d; found = true; }
     }
@@ -203,11 +233,12 @@ struct Cell {
   }
 
   // Strongest neighbouring enemy. Returns true and sets `out` to its direction;
-  // false if no enemy is adjacent. Ties pick the first in N,E,S,W order.
-  bool findStrongestEnemy(Dir& out) const {
+  // false if no enemy is adjacent. Ties settled by the scan order, as above.
+  bool findStrongestEnemy(Dir& out, Dir from = Dir::N) const {
     bool found = false;
     Strength best = Strength::None;
-    for (uint8_t d = 0; d < 4; d++) {
+    for (uint8_t i = 0; i < 4; i++) {
+      const uint8_t d = ((uint8_t)from + i) & 3;
       if (!n[d].isEnemy()) continue;
       if (!found || n[d].strength > best) { best = n[d].strength; out = (Dir)d; found = true; }
     }
@@ -244,6 +275,16 @@ struct ButtonState {
 struct World {
   Phase       phase;
   ButtonState button;   // button A -- see ButtonState above
+
+  // Ticks since the match began. Like everything else here it is handed in
+  // fresh each call, not something your rule remembers -- and both ends of a
+  // networked match hold the same number when their rules run, so using it
+  // cannot pull two devices out of step.
+  //
+  // Mostly useful as the `from` argument to the find* helpers: it walks the
+  // preferred scan direction round the compass and takes the north-east drift
+  // out of a rule built on them. See WHERE DO I LOOK FIRST above.
+  uint16_t    tick;
 };
 
 // What your rule returns. An Action converts to one on its own, so the usual

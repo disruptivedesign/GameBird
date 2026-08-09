@@ -128,11 +128,11 @@ bool Multiplayer::tryEndSeriesEarly(){
 // otherwise be rejected as stale.
 void Multiplayer::beginMatch(){
   uint32_t seed = esp_random();
-  net().startMatch(seed);
-  startGame(seed);
+  net().startMatch(seed, _rounds);
+  startGame(seed, _rounds);
 }
 
-void Multiplayer::startGame(uint32_t seed){
+void Multiplayer::startGame(uint32_t seed, uint8_t rounds){
   // Second gate. Browse checks the lobby BEACON; this checks what actually
   // arrived in MSG_START, which is a different frame and can disagree with it --
   // a host that re-opened on a different board, or a stale session. Playing on
@@ -147,6 +147,16 @@ void Multiplayer::startGame(uint32_t seed){
     return;
   }
 
+  // The host chose the series length; a client is told it here and keeps its
+  // own copy, because each role decides on its own when the series has ended
+  // and the two answers have to match. The game clamps whatever it is handed.
+  _rounds = rounds;
+  _game->setSeriesRounds(rounds);
+
+  // Both roles count _matchesPlayed independently and the lobby is closed for
+  // the whole series, so this is the same number on every device without being
+  // sent -- which makes it a safe way to agree on the opening.
+  _game->setOpening(_matchesPlayed);
   _game->begin(net().arenaW(), net().arenaH(), net().myId(),
                net().matchPlayers(), seed, net().colors());
   _winRecorded = false;
@@ -262,19 +272,35 @@ void Multiplayer::serviceHostLobby(uint32_t now){
     _state = MP_BROWSE;
     return;
   }
+  // Series length is the host's alone: only this screen exists to set it, and
+  // the number rides out in MSG_START so every client counts to the same total.
+  // Games without a series (maxSeriesRounds() == 0) get no picker at all.
+  const uint8_t maxRounds = _game->maxSeriesRounds();
+  if (maxRounds){
+    if (_rounds < 1) _rounds = 1;
+    if (int8_t s = _sys.joy.stepY()){          // stepY is + for DOWN; up = more
+      const int want = (int)_rounds - s;
+      if (want >= 1 && want <= (int)maxRounds){
+        _rounds = (uint8_t)want;
+        _sys.audio.play(SFX_MOVE);
+      }
+    }
+  }
+
   // No SFX_SELECT on the start press: startGame() goes straight to the
   // countdown, whose first SFX_COUNTDOWN (PRIO_MATCH) would stomp a PRIO_UI
   // blip on the very next tick anyway. The countdown IS the confirmation.
   bool startReq = _sys.buttonA.wasPressed() && pc >= MIN_PLAYERS;
 
   if (startReq){
-    uint32_t seed = esp_random();
-    net().startMatch(seed);
-    startGame(seed);
+    beginMatch();
     return;
   }
 
   drawRoster(now);
+  // The roster occupies four rows of three from the top, so the last row is
+  // free whatever the player count.
+  if (maxRounds) drawCountPips(disp(), MATRIX_H - 1, maxRounds, _rounds);
   if (pc >= MIN_PLAYERS && ((now / 400) & 1))
     disp().setPixel(MATRIX_W - 1, 0, CRGB(0, 220, 60));   // enough to start
   disp().show();
@@ -361,7 +387,7 @@ void Multiplayer::serviceClientLobby(uint32_t now){
   // on the same pass: the host broadcasts START and then beacons `started`, and
   // whichever this loop sees first, the START is the one that matters.
   StartPayload sp;
-  if (net().takeStart(sp)){ startGame(sp.seed); return; }
+  if (net().takeStart(sp)){ startGame(sp.seed, sp.rounds); return; }
 
   // MSG_START is a single unacked broadcast, and it is the one frame whose loss
   // strands us: the host plays on, and its beacons and STATE frames both keep
@@ -570,7 +596,7 @@ void Multiplayer::serviceResult(uint32_t now){
   // exists, go to it.
   if (net().role() == ROLE_CLIENT){
     StartPayload sp;
-    if (net().takeStart(sp)){ startGame(sp.seed); return; }
+    if (net().takeStart(sp)){ startGame(sp.seed, sp.rounds); return; }
   }
 
   uint32_t el = now - _resultStart;
@@ -648,7 +674,7 @@ void Multiplayer::serviceSeriesOver(uint32_t now){
 
   // Client: the host may start a fresh series from this same screen.
   StartPayload sp;
-  if (net().takeStart(sp)){ _matchesPlayed = 0; startGame(sp.seed); return; }
+  if (net().takeStart(sp)){ _matchesPlayed = 0; startGame(sp.seed, sp.rounds); return; }
   if (net().msSinceHost(now) > 2000){ net().leave(); _state = MP_BROWSE; }
 }
 

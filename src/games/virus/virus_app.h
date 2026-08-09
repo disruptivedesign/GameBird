@@ -36,6 +36,7 @@ private:
   CRGB     _colors[NET_MAX_PLAYERS];
   uint8_t  _wins[NET_MAX_PLAYERS] = { 0 };
   uint8_t  _roundsPlayed = 0;                         // matches finished this series
+  uint8_t  _rounds = VIRUS_ROUNDS_DEFAULT;            // matches this series will run
   uint8_t  _winner  = 0xFF;
   bool     _winRecorded = false;
   bool     _wantExit    = false;

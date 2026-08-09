@@ -46,6 +46,10 @@ private:
   // here? Until we have, a host still flagged "started" is just one that has
   // not reopened after the last match, not one that started without us.
   uint8_t  _matchesPlayed = 0;   // this series; only counted when seriesRounds() > 0
+  // Series length the HOST picked in the lobby. A client never edits this: its
+  // copy arrives in MSG_START and is applied to the game, so both roles count
+  // to the same number. Meaningless for a game with maxSeriesRounds() == 0.
+  uint8_t  _rounds = 1;
 
   // ---- lockstep client ------------------------------------------------------
   // The private-state frame for a tick and the board it belongs to are two
@@ -59,7 +63,7 @@ private:
 
   LocalInput readInput();
   bool arenaMatches(const LobbyInfo& l) const;   // can we play on that board?
-  void startGame(uint32_t seed);
+  void startGame(uint32_t seed, uint8_t rounds);
 
   void serviceBrowse(uint32_t now);
   void serviceHostLobby(uint32_t now);

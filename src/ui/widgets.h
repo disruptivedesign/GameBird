@@ -13,3 +13,10 @@
 void drawSelectorDots(Display& d, int row, int n, int sel,
                       const CRGB& on  = CRGB(255, 255, 255),
                       const CRGB& off = CRGB(0, 40, 40));
+
+// The same row of dots, but lit CUMULATIVELY: the first `lit` of `n` are on.
+// For a quantity -- how many matches a series runs -- "three are on" reads at a
+// glance where "the third one is highlighted" has to be counted.
+void drawCountPips(Display& d, int row, int n, int lit,
+                   const CRGB& on  = CRGB(255, 255, 255),
+                   const CRGB& off = CRGB(0, 40, 40));
