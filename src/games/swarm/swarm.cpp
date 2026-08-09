@@ -91,6 +91,15 @@ void Swarm::begin(uint8_t arenaW, uint8_t arenaH, uint8_t myId,
   _lastLives = _sim.lives();
   _lastWave  = _sim.wave();
   _lastFx    = 0;
+
+  // The wingman's loadout for this run. Mixed rather than taken from the low
+  // bits directly, because the sim seeds its own wave rolls from the same
+  // number and a wingman whose weapon tracked the wave layout would be a
+  // pattern somebody eventually notices.
+  uint32_t h = seed * 2654435761u;
+  h ^= h >> 15;
+  _aiWeapon = (uint8_t)(h % SWM_W_COUNT);
+  _aiHold   = false;
 }
 
 // ============================================================================
@@ -119,19 +128,59 @@ void Swarm::applyInput(uint8_t pid, const uint8_t* buf, size_t len){
 //  through the identical applyInput() path -- the reason SinglePlayer needs no
 //  special case for a co-op game.
 //
-//  It carries a Blaster on purpose. The interesting loadout decision in solo
-//  play is the human's, and a bot holding the Laser would spend the run
-//  charging a beam it never releases.
+//  Its weapon is rolled per run (see begin()) rather than fixed, so solo play
+//  is not the same fight every time. That used to be a Blaster always, for a
+//  good reason: the bot held the trigger down forever, and two of the five
+//  weapons do their work on the RELEASE. A Laser would have charged to full and
+//  sat there; a Shield would have drained its stamina and then stood in the
+//  open, because stamina only refills once the trigger is let go. Randomising
+//  the weapon without teaching the trigger to let go would have handed the
+//  wingman a dead stick two runs in five.
+//
+//  So the hold is now the weapon's to decide. The three that fire on a cooldown
+//  still hold it down; the two that fire on release let go at the moment that
+//  is worth the most.
 // ============================================================================
 size_t Swarm::aiInput(uint8_t pid, uint8_t* buf, size_t cap){
   if (cap < 3) return 0;
   buf[0] = 0;
   buf[1] = (uint8_t)(int8_t)-100;     // hold the floor
-  buf[2] = (uint8_t)(0x01 | (SWM_W_BLASTER << 2));
+  buf[2] = (uint8_t)(0x01 | (_aiWeapon << 2));
 
   if (pid >= _sim.numPlayers()) return 3;
   const SwmPlayer& me = _sim.player(pid);
   if (!me.alive) return 3;
+
+  // `meter` rather than the raw charge: the sim's tuning constants are private
+  // to swarm_sim.cpp, and meter is the same number normalised to 0..15 for the
+  // screen. Full is full on either scale.
+  bool hold = true;
+  switch (_aiWeapon){
+    case SWM_W_LASER:
+      // Let go exactly at full, which fires the strong beam rather than the
+      // weak one, then charge again from zero.
+      hold = me.meter < 15;
+      break;
+
+    case SWM_W_SHIELD:
+      // The only weapon whose answer needs yesterday. Held, `meter` reports the
+      // orb's wind-up; released, it reports stamina -- so a single tick cannot
+      // tell "barrier up" from "barrier dry", and reading it either way gives a
+      // barrier that strobes at a one-in-three duty cycle, which is the exact
+      // thing the sim's own comment says it was shaped to avoid.
+      //
+      // Latch instead: hold until the barrier actually drops, then let go --
+      // which throws the orb the hold has been earning -- and stay off until
+      // stamina reads full again.
+      if      (_aiHold && !me.shieldOn) _aiHold = false;
+      else if (!_aiHold && me.meter >= 15) _aiHold = true;
+      hold = _aiHold;
+      break;
+
+    default:                            // Blaster, Bomb, Spread: cooldown-fired
+      break;
+  }
+  if (!hold) buf[2] &= (uint8_t)~0x01;
 
   // Chase the nearest threat: the alien with the greatest y, since that is the
   // one about to cost the team a life.

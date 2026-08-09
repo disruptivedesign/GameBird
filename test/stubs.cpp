@@ -10,6 +10,7 @@
 // ============================================================================
 #include <Arduino.h>
 #include "core/display.h"
+#include "audio/audio.h"
 
 SerialShim Serial;
 
@@ -64,3 +65,10 @@ int analogRead(uint8_t pin){
 void Display::clear() {}
 void Display::setPixel(int, int, const CRGB&) {}
 void Display::border(const CRGB&) {}
+
+// ---- Audio ------------------------------------------------------------------
+// Swarm's NetGame wrapper turns sim events into sounds on the way past. Nothing
+// asserts on audio, but the calls have to resolve for the suite to link -- and
+// compiling that file is what puts Swarm::aiInput, the solo wingman, under test
+// at all.
+void Audio::play(const Sfx&) {}

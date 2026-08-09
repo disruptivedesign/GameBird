@@ -85,6 +85,15 @@ private:
   uint8_t  _myWeapon = SWM_W_BLASTER;
   CRGB     _colors[NET_MAX_PLAYERS];
 
+  // ---- AI wingman (solo only; nothing calls aiInput in a networked match) ---
+  // Rolled from the seed in begin(), which SinglePlayer re-rolls for every run
+  // and every retry after a loss -- so the wingman turns up with something
+  // different each time instead of five Blasters in a row.
+  uint8_t  _aiWeapon = SWM_W_BLASTER;
+  // Trigger latch for the Shield, the one weapon whose hold cannot be decided
+  // from this tick alone. See aiInput().
+  bool     _aiHold = false;
+
   // Client-side audio latches. A client never runs the sim, so it has no event
   // bits to map -- it has to notice what changed between two snapshots instead.
   uint8_t  _lastLives = 0;

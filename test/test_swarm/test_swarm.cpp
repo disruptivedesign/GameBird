@@ -16,6 +16,7 @@
 #include <unity.h>
 #include <cstdio>
 #include "games/swarm/swarm_sim.h"
+#include "games/swarm/swarm.h"
 #include "games/swarm/waves.h"
 
 // Mirrors of constants private to swarm_sim.cpp. Repeated on purpose: if
@@ -829,6 +830,93 @@ static void anIdleRunTerminates(void){
 }
 
 // ============================================================================
+// ============================================================================
+//  The solo wingman
+// ============================================================================
+//  Its weapon is rolled from the run's seed so solo play is not the same fight
+//  every time. That only works because its trigger is weapon-aware: three of
+//  the five fire on a cooldown and want the trigger held, two fire on RELEASE
+//  and get nothing at all from a bot that holds it forever. These two suites
+//  are what stop that regressing back to a permanent hold -- which would look
+//  entirely reasonable in a diff and would quietly disarm the wingman two runs
+//  in five.
+// ============================================================================
+
+// The weapon is not exposed as such, but it rides in the input the wingman
+// produces -- the same byte the sim reads -- so this asks the real thing.
+static uint8_t aiWeaponOf(Swarm& g){
+  uint8_t buf[3] = { 0, 0, 0 };
+  g.aiInput(1, buf, sizeof(buf));
+  return (uint8_t)((buf[2] >> 2) & 0x07);
+}
+
+static uint32_t seedArming(Swarm& g, uint8_t want){
+  for (uint32_t seed = 1; seed < 5000; seed++){
+    g.begin(ARENA_W, ARENA_H, 0, 2, seed, nullptr);
+    if (aiWeaponOf(g) == want) return seed;
+  }
+  return 0;
+}
+
+// Did anything actually leave the ship? A bullet owned by the wingman covers
+// four of the weapons; the Laser fires a beam rather than a bullet, and the
+// only trace that leaves by the next tick is a full meter going empty.
+static bool wingmanAttacks(uint32_t seed, uint8_t weapon, int maxTicks){
+  Swarm g;
+  g.begin(ARENA_W, ARENA_H, 0, 2, seed, nullptr);
+  uint8_t buf[8];
+  uint8_t prevMeter = 0;
+  for (int i = 0; i < maxTicks; i++){
+    const size_t n = g.aiInput(1, buf, sizeof(buf));
+    g.applyInput(1, buf, n);
+    g.hostTick();
+
+    for (uint8_t b = 0; b < SWM_MAX_BULLETS; b++){
+      const SwmBullet& bl = g.sim().bullet(b);
+      if (bl.used && bl.owner == 1) return true;
+    }
+    const uint8_t m = g.sim().player(1).meter;
+    if (weapon == SWM_W_LASER && prevMeter >= 15 && m < 15) return true;
+    prevMeter = m;
+  }
+  return false;
+}
+
+// Every weapon has to be reachable, or the roll is decoration.
+static void theWingmanVariesItsWeaponBetweenRuns(void){
+  Swarm g;
+  bool seen[SWM_W_COUNT] = { false };
+  for (uint32_t seed = 1; seed <= 500; seed++){
+    g.begin(ARENA_W, ARENA_H, 0, 2, seed, nullptr);
+    const uint8_t w = aiWeaponOf(g);
+    TEST_ASSERT_LESS_THAN_UINT8_MESSAGE(SWM_W_COUNT, w,
+      "the wingman was armed with a weapon that does not exist");
+    seen[w] = true;
+  }
+  for (uint8_t w = 0; w < SWM_W_COUNT; w++){
+    char msg[80];
+    snprintf(msg, sizeof(msg), "weapon %u never came up across 500 runs", (unsigned)w);
+    TEST_ASSERT_TRUE_MESSAGE(seen[w], msg);
+  }
+}
+
+// The one that earns its keep. A wingman that cannot shoot is worse than a
+// predictable one, and on a 16x16 panel it reads as "that run felt hard"
+// rather than as a bug.
+static void everyWeaponTheWingmanCanRollActuallyFires(void){
+  for (uint8_t w = 0; w < SWM_W_COUNT; w++){
+    Swarm probe;
+    const uint32_t seed = seedArming(probe, w);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "no seed in 5000 arms the wingman with weapon %u", (unsigned)w);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(0u, seed, msg);
+
+    snprintf(msg, sizeof(msg), "weapon %u never went off -- trigger held when it should release?",
+             (unsigned)w);
+    TEST_ASSERT_TRUE_MESSAGE(wingmanAttacks(seed, w, 400), msg);
+  }
+}
+
 int main(int, char**){
   UNITY_BEGIN();
   RUN_TEST(waveTableFits);
@@ -875,6 +963,8 @@ int main(int, char**){
   RUN_TEST(snapshotRoundTrips);
   RUN_TEST(aBusyBoardStillFits);
   RUN_TEST(anIdleRunTerminates);
+  RUN_TEST(theWingmanVariesItsWeaponBetweenRuns);
+  RUN_TEST(everyWeaponTheWingmanCanRollActuallyFires);
   return UNITY_END();
 }
 

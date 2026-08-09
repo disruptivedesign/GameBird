@@ -40,6 +40,17 @@ struct CRGB {
     return *this;
   }
 
+  // As nscale8, but a channel that was lit never scales all the way to zero.
+  // FastLED's "video" variants exist so a dimmed colour keeps its hue instead
+  // of dropping channels one at a time as it fades out.
+  CRGB& nscale8_video(uint8_t s) {
+    const uint8_t nz = (s == 0) ? 0 : 1;
+    r = (uint8_t)(((uint16_t)r * (uint16_t)s) >> 8) + ((r && s) ? nz : 0);
+    g = (uint8_t)(((uint16_t)g * (uint16_t)s) >> 8) + ((g && s) ? nz : 0);
+    b = (uint8_t)(((uint16_t)b * (uint16_t)s) >> 8) + ((b && s) ? nz : 0);
+    return *this;
+  }
+
   bool operator==(const CRGB& o) const { return r == o.r && g == o.g && b == o.b; }
 };
 
