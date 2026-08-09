@@ -24,10 +24,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `cache: pip` here: it needs a requirements.txt/pyproject.toml to key
+      # on and this project has neither -- PlatformIO is installed straight from
+      # the index below. Asking for it anyway fails the step outright. The cache
+      # that actually pays for itself is ~/.platformio, further down.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
 
       # Keyed on platformio.ini: the pioarduino platform URL and the FastLED
       # version are both pinned there, so a change to either earns a fresh
