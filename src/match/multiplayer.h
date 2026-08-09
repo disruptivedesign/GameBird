@@ -49,6 +49,10 @@ private:
   // Series length the HOST picked in the lobby. A client never edits this: its
   // copy arrives in MSG_START and is applied to the game, so both roles count
   // to the same number. Meaningless for a game with maxSeriesRounds() == 0.
+  //
+  // Seeded from the game's own default on entry (see begin()) rather than a
+  // number written here -- the shell has no business deciding what a sensible
+  // series length is for a game it knows nothing else about.
   uint8_t  _rounds = 1;
 
   // ---- lockstep client ------------------------------------------------------

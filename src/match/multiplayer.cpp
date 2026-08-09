@@ -46,6 +46,11 @@ void Multiplayer::begin(){
   _sel = 0;
   _wantExit = false;
   _matchesPlayed = 0;
+  // The lobby picker opens on whatever the game considers a normal series, so
+  // the host only has to touch it to disagree. 0 means the game has no series
+  // at all, and then this is never read.
+  _rounds = _game->seriesRounds();
+  if (!_rounds) _rounds = 1;
 }
 
 // begin() already clears a stale session, so this is not about the next entry --

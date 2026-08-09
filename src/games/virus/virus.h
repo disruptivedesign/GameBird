@@ -22,12 +22,16 @@
 #define VIRUS_HUD_ROWS     2     // rows below the board: territory bar + clock
 // Longest series a player can ask for, single-device and networked alike. Lives
 // here rather than in virus_app.h because the NetGame contract has to answer
-// for it too. The actual length is chosen before the match and clamped to this;
-// one round is the default, because a five-match series is a long sit for
-// somebody who only wanted to watch a virus run once.
+// for it too. The actual length is chosen before the match and clamped to this.
+//
+// A full series is the default: there is one opening per round, so anything
+// shorter shows only the first few of them and judges a virus on a couple of
+// starting positions rather than all five. Somebody who wants one quick match
+// can turn it down; somebody comparing two rules wants the whole set, and that
+// is the case worth making easy.
 #define VIRUS_SERIES_ROUNDS 5
 #define VIRUS_ROUNDS_MIN    1
-#define VIRUS_ROUNDS_DEFAULT 1
+#define VIRUS_ROUNDS_DEFAULT VIRUS_SERIES_ROUNDS
 // State snapshot header, ahead of the packed cells: phase, winner, numPlayers,
 // arenaW, arenaH, then the tick as two bytes.
 #define VIRUS_STATE_HDR    7
