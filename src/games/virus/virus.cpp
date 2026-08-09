@@ -519,7 +519,7 @@ void Virus::hostTick() {
     // Decide and pay, one cell at a time, in the ONE agreed order. There is no
     // funding walk: a cell's purse is its own, so whether it can act depends on
     // nothing but its own bank, and an unaffordable request costs its owner
-    // nothing except this cell's tick. me.canAfford() is a promise, not a hint.
+    // nothing except this cell's tick. me.canAfford*() is a promise, not a hint.
     uint16_t wanted = 0, funded = 0;
     for (int i = 0; i < owned; i++) {
       const int c = _owned[i];

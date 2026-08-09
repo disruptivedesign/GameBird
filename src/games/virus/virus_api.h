@@ -33,6 +33,16 @@ enum class Dir : uint8_t { N = 0, E = 1, S = 2, W = 3 };
 
 enum class ActionKind : uint8_t { Idle, Grow, Fortify, Attack, Move, Spore };
 
+// Enumerations for costs
+enum class Cost : uint8_t {
+  Idle = 0,
+  Grow = 2,
+  Fortify = 1,
+  Attack = 1,
+  Move = 1,
+  Spore = 6,
+};
+
 // One thing a cell can try to do this tick. Build these with the factories
 // below, e.g. Action::grow(Dir::N).
 struct Action {
@@ -50,13 +60,22 @@ struct Action {
   // Move is half of it precisely because moving gains you no ground. Spore is
   // triple Grow because it can cross ground you do not control -- far too
   // expensive to expand with, so it is purely a way through a blockade.
+  //
+  // A switch rather than a chain of ?: on purpose: ActionKind and Cost are two
+  // lists that have to agree, and a switch is the shape a compiler can check --
+  // add a kind without pricing it and -Wswitch names this spot. That needs
+  // -Wall, which platformio.ini does not set today; until it does, an unpriced
+  // action silently costs nothing.
   constexpr uint8_t cost() const {
-    return kind == ActionKind::Grow    ? 2
-         : kind == ActionKind::Fortify ? 1
-         : kind == ActionKind::Attack  ? 1
-         : kind == ActionKind::Move    ? 1
-         : kind == ActionKind::Spore   ? 6
-         : 0;   // Idle
+    switch (kind) {
+      case ActionKind::Grow:    return static_cast<uint8_t>(Cost::Grow);
+      case ActionKind::Fortify: return static_cast<uint8_t>(Cost::Fortify);
+      case ActionKind::Attack:  return static_cast<uint8_t>(Cost::Attack);
+      case ActionKind::Move:    return static_cast<uint8_t>(Cost::Move);
+      case ActionKind::Spore:   return static_cast<uint8_t>(Cost::Spore);
+      case ActionKind::Idle:    break;
+    }
+    return static_cast<uint8_t>(Cost::Idle);
   }
 };
 
@@ -85,7 +104,7 @@ struct Neighbour {
 // Your cell: its own strength, its own purse, and its four neighbours.
 struct Cell {
   Strength  strength;    // your durability here, Weak..Strongest
-  uint16_t  energy;      // THIS CELL's banked energy -- see canAfford() below
+  uint16_t  energy;      // THIS CELL's banked energy -- see canAfford* below
   uint8_t   note;        // reserved for a future level; always 0 in v1
   Neighbour n[4];        // indexed by Dir: n[0]=N, n[1]=E, n[2]=S, n[3]=W
   bool      far_open[4]; // is the tile THREE steps this way free to Spore into?
@@ -93,28 +112,57 @@ struct Cell {
 
   const Neighbour& neighbour(Dir d) const { return n[(uint8_t)d]; }
 
-  // Can this cell pay for that action right now? Unlike v1's shared purse, the
-  // answer is EXACT and binding: energy belongs to this cell alone, so if this
-  // returns true the action WILL be funded. Nothing else can spend it first.
-  // If it returns false the action is simply skipped -- no other cell of yours
-  // is affected, so an unaffordable request costs you nothing but this cell's
-  // tick. Return Action::idle() to save up instead.
-  bool canAfford(const Action& a) const { return energy >= a.cost(); }
+  // ---- can this cell PAY for it? (money only -- ignores terrain) -----------
+  //
+  // Exact and binding, not a hint: energy belongs to this cell alone, so when
+  // one of these says true the action WILL be funded -- no other cell can spend
+  // the money first. Ask anyway when it says false and the action is simply
+  // skipped: this cell keeps its energy and none of your other cells are
+  // affected, so it costs you nothing but this cell's tick.
+  //
+  // These are the ones to reach for when a cell should SAVE. Return
+  // Action::idle() while canAffordGrow() is false and the cell banks toward the
+  // 2; spend the 1 it has on a Fortify instead and it may never get there.
+  bool canAffordGrow()    const { return energy >= static_cast<uint8_t>(Cost::Grow);    }
+  bool canAffordFortify() const { return energy >= static_cast<uint8_t>(Cost::Fortify); }
+  bool canAffordAttack()  const { return energy >= static_cast<uint8_t>(Cost::Attack);  }
+  bool canAffordMove()    const { return energy >= static_cast<uint8_t>(Cost::Move);    }
+  bool canAffordSpore()   const { return energy >= static_cast<uint8_t>(Cost::Spore);   }
 
-  // True if you could Grow in this direction (neighbour is open ground).
+  // ---- can this cell actually DO it? (money AND terrain) -------------------
+  //
+  // Each of these folds in the matching canAfford* above, so a false answer can
+  // mean either "cannot pay yet" or "nowhere to do it". When you need to tell
+  // those two apart, ask canAfford*() and find*() separately.
+
+  // True if you could Grow this way right now: you can pay the 2 and the
+  // neighbour is open ground.
   bool canGrow(Dir d) const {
     const Neighbour& q = neighbour(d);
-    return q.isEmpty() || q.isNeutral();
+    return canAffordGrow() && (q.isEmpty() || q.isNeutral());
   }
 
-  // True if you could Move in this direction. Same test as canGrow: a cell
-  // walks onto exactly the ground it could have claimed.
-  bool canMove(Dir d) const { return canGrow(d); }
+  // True if you could Move this way right now: you can pay the 1 and the
+  // neighbour is open ground -- a cell walks onto exactly the ground it could
+  // have claimed, for half the price of claiming it.
+  bool canMove(Dir d) const {
+    const Neighbour& q = neighbour(d);
+    return canAffordMove() && (q.isEmpty() || q.isNeutral());
+  }
 
-  // True if you could Spore in this direction: the tile THREE steps away is on
-  // the board and open. Whatever sits between you and it does not matter --
-  // that is the point of Spore, it leaps over enemies, your own cells, walls.
-  bool canSpore(Dir d) const { return far_open[(uint8_t)d]; }
+  // True if you could Spore this way right now: you can pay the 6 and the tile
+  // THREE steps away is on the board and open. Whatever sits between you and it
+  // does not matter -- that is the point of Spore, it leaps over enemies, your
+  // own cells, walls.
+  bool canSpore(Dir d) const { return canAffordSpore() && far_open[(uint8_t)d]; }
+
+  // True if you could Fortify right now: you can pay the 1 and you are not
+  // already Strongest.
+  bool canFortify() const { return (strength < Strength::Strongest) && canAffordFortify(); }
+
+  // True if you could Attack this way right now: you can pay the 1 and there is
+  // an enemy in that direction.
+  bool canAttack(Dir d) const { return canAffordAttack() && neighbour(d).isEnemy(); }
 
   // ---- convenience helpers (optional; write raw loops if you prefer) --------
 
@@ -150,6 +198,18 @@ struct Cell {
     for (uint8_t d = 0; d < 4; d++) {
       if (!n[d].isEnemy()) continue;
       if (!found || n[d].strength < best) { best = n[d].strength; out = (Dir)d; found = true; }
+    }
+    return found;
+  }
+
+  // Strongest neighbouring enemy. Returns true and sets `out` to its direction;
+  // false if no enemy is adjacent. Ties pick the first in N,E,S,W order.
+  bool findStrongestEnemy(Dir& out) const {
+    bool found = false;
+    Strength best = Strength::None;
+    for (uint8_t d = 0; d < 4; d++) {
+      if (!n[d].isEnemy()) continue;
+      if (!found || n[d].strength > best) { best = n[d].strength; out = (Dir)d; found = true; }
     }
     return found;
   }
