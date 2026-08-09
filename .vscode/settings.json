@@ -1,4 +1,5 @@
 {
     "editor.inlayHints.enabled": "off",
-    "clangd.inlayHints.enabled": false
+    "clangd.inlayHints.enabled": false,
+    "idf.currentSetup": "C:/Espressif/frameworks/esp-idf-v5.2.2/"
 }

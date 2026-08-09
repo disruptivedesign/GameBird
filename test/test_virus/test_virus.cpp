@@ -146,7 +146,7 @@ static Decision ruleGrowWest(const Cell&, const World&) {
 }
 
 static Decision ruleFortify(const Cell& me, const World&) {
-  if (me.canAfford(Action::fortify())) return Action::fortify();
+  if (me.canAffordFortify()) return Action::fortify();
   return Action::idle();
 }
 
@@ -177,7 +177,7 @@ static Decision ruleSporeOrGrow(const Cell& me, const World&) {
 // Only the Strongest cell does anything: save up, then leap the blockade east.
 static Decision ruleSporeEastWhenStrongest(const Cell& me, const World&) {
   if (me.strength != Strength::Strongest)         return Action::idle();
-  if (me.canSpore(Dir::E) && me.canAfford(Action::spore(Dir::E)))
+  if (me.canSpore(Dir::E))   // canSpore now covers the purse as well as the tile
     return Action::spore(Dir::E);
   return Action::idle();
 }
@@ -187,7 +187,7 @@ static Decision ruleSporeEastWhenStrongest(const Cell& me, const World&) {
 // spore possible on the tick after the step.
 static Decision ruleBankThenStepThenSpore(const Cell& me, const World&) {
   if (me.strength != Strength::Strongest)            return Action::idle();
-  if (!me.canAfford(Action::spore(Dir::E)))          return Action::idle();   // saving
+  if (!me.canAffordSpore())                          return Action::idle();   // saving
   if (me.neighbour(Dir::W).isEdge())                 return Action::move(Dir::E);
   if (me.canSpore(Dir::E))                           return Action::spore(Dir::E);
   return Action::idle();

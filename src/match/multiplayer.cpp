@@ -529,7 +529,7 @@ void Multiplayer::servicePlayingLockstep(uint32_t now){
     uint16_t stick;
     if (net().takeState(sb, sn, stick)){
       _game->applyState(sb, sn);
-      // Energy first: a rule cannot answer canAfford() without it. If the
+      // Energy first: a rule cannot answer canAfford*() without it. If the
       // matching frame has not arrived, every cell reads zero and idles, which
       // costs this device one tick and disturbs nobody else.
       if (_privHeld && _privTick == stick){

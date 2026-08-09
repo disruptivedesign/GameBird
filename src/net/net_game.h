@@ -124,7 +124,7 @@ public:
   // Default sends nothing, so a game whose whole world is public is untouched.
   //
   // It exists because the public snapshot cannot carry everything for everyone:
-  // Virus needs each cell's banked energy to answer canAfford(), which is 4
+  // Virus needs each cell's banked energy to answer canAfford*(), which is 4
   // bits per cell per player and does not fit the frame four times over -- but
   // fits easily once, unicast, for the player it belongs to. Anything else a
   // player may see and the others may not (a hand, a fog of war) belongs here.

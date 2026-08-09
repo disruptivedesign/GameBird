@@ -72,7 +72,8 @@
 //  anything beyond that is wasted, so a cell with nothing to do is losing you
 //  income -- that is the pressure to keep expanding.
 //
-//    me.canAfford(a)   can this cell pay for that action right now?
+//    me.canAffordGrow()   can this cell pay the 2 for a Grow right now?
+//    me.canAffordAttack() ... and so on, one per action.
 //
 //  It is an exact answer, not a hint. If it is true, the action WILL happen.
 //  If it is false and you ask anyway, nothing happens and the cell keeps its
@@ -190,16 +191,30 @@
 // ----------------------------------------------------------------------------
 //  HELPERS  --  all optional; write the loops yourself if you prefer
 // ----------------------------------------------------------------------------
-//  me.canAfford(a)         can this cell pay for that action right now?
-//  me.canGrow(d)           is that neighbour open ground?
-//  me.canMove(d)           the same question -- you walk onto what you could
-//                          have claimed
-//  me.canSpore(d)          is the tile 3 steps that way free to land on?
+//  CAN I PAY? -- money only, says nothing about what is around you. These are
+//  the ones to ask when a cell should hold its energy rather than spend it.
+//  me.canAffordGrow()      is there 2 in this cell's purse?
+//  me.canAffordFortify()   is there 1?
+//  me.canAffordAttack()    is there 1?
+//  me.canAffordMove()      is there 1?
+//  me.canAffordSpore()     is there 6?
+//
+//  CAN I DO IT? -- money AND terrain, so a false can mean either "cannot pay
+//  yet" or "nowhere to do it". Ask the pair above and below to tell them apart.
+//  me.canGrow(d)           can pay the 2 and that neighbour is open ground
+//  me.canMove(d)           can pay the 1 and that neighbour is open ground --
+//                          you walk onto what you could have claimed, for half
+//  me.canSpore(d)          can pay the 6 and the tile 3 steps that way is free
+//  me.canFortify()         can pay the 1 and you are not already Strongest
+//  me.canAttack(d)         can pay the 1 and there is an enemy that way
+//
+//  WHAT IS AROUND ME? -- terrain only, no money involved.
 //  me.findOpen(d)          sets d to the first open direction (grow or move);
 //                          false if you are boxed in
 //  me.findSporeTarget(d)   sets d to the first sporeable direction; false if
 //                          every landing spot is blocked or off the board
 //  me.findWeakestEnemy(d)  sets d to the softest adjacent enemy; false if none
+//  me.findStrongestEnemy(d) sets d to the toughest adjacent enemy; false if none
 //  me.countAdjacent(o)     how many neighbours are Occupant o. For example
 //                          countAdjacent(Occupant::Empty) == 0 means this cell
 //                          is on no frontier -- a good test for "I am interior,
@@ -235,115 +250,129 @@
 // ----------------------------------------------------------------------------
 //  THE FOUR STARTERS
 // ----------------------------------------------------------------------------
-//  A Blue    balanced  -- expand, fight when boxed in, press harder at the End
-//  B Orange  fortress  -- thicken to Strong before bothering to expand
-//  C Cyan    aggressor -- attack on sight, expand with the leftovers
-//  D Purple  nomad     -- never fights: takes open ground, walks away from
-//                         anything that reaches it, spores out of a corner
+//  All four ship IDENTICAL, and deliberately mediocre: grow into the first open
+//  tile, otherwise hit the toughest neighbour, otherwise thicken up. Everyone
+//  starts from the same line, so a match out of the box is a draw and the only
+//  thing that separates the four is what you do to your own.
 //
-//  Four different strategies, so a match out of the box is lively. Take one
-//  apart and see what it takes to beat the other three.
+//  It is left unoptimised on purpose -- the obvious weaknesses are the point,
+//  and each is a short edit:
+//
+//    * It never saves. A cell with 1 energy next to open ground spends it on a
+//      Fortify or an Attack instead of banking the 2 for the Grow. Ask
+//      canAffordGrow() and idle when it is false and the cell expands instead.
+//    * It attacks the STRONGEST neighbour, which takes the most hits to kill.
+//      findWeakestEnemy(d) is right there and actually finishes cells off.
+//    * It ignores `world`. Phase tells you how far along the match is -- there
+//      is a case for expanding Early and fighting at the End.
+//    * It never uses Move or Spore. Move steps a cell out of a fight for 1,
+//      keeping its strength and its savings; Spore leaps a blockade entirely
+//      for 6. Nothing here touches either -- see the ACTIONS section above.
+//    * Every find* helper scans N,E,S,W and stops at the first hit, so all four
+//      viruses drift north and east. Your own loop does better.
 // ============================================================================
 
 
 // ------------------------------- Virus A - Blue -----------------------------
-// BALANCED (the reference virus). Expand onto open ground, saving up for the
-// claim rather than frittering the energy on something cheaper; if boxed in,
-// chip the weakest neighbouring enemy; otherwise dig in. A solid base to modify.
+// Basic implementation of virus.
 Decision decideA(const Cell& me, const World& world) {
+  (void)world;   // this starter ignores the phase -- see THE FOUR STARTERS above
+
+  // Our direction variable
   Dir d = Dir::N;
 
-  // By the End phase there is little ground left to take and fights decide the
-  // match, so hitting something comes before everything else.
-  if (world.phase == Phase::End && me.findWeakestEnemy(d) && me.canAfford(Action::attack(d)))
+  // If there is open ground, and we have enough energy to grow into it, do so.
+  if (me.findOpen(d) && me.canGrow(d)){
+    return Action::grow(d);
+  }
+
+  // No where to grow, attack the strongest enemy.
+  if (me.findStrongestEnemy(d) && me.canAttack(d)){
     return Action::attack(d);
+  }
 
-  // Area wins matches, so open ground is worth waiting for: if this cell cannot
-  // afford the claim yet it idles and banks rather than spending the 1 it does
-  // have. Spend small every tick and you never afford the 2.
-  if (me.findOpen(d))
-    return me.canAfford(Action::grow(d)) ? Action::grow(d) : Action::idle();
-
-  // Boxed in: chip away at the softest neighbour.
-  if (me.findWeakestEnemy(d) && me.canAfford(Action::attack(d)))
-    return Action::attack(d);
-
-  // Nothing to grab and nothing to fight: thicken up.
-  if (me.strength < Strength::Strongest && me.canAfford(Action::fortify()))
+  // No where to grow, no where to attack, so fortify.
+  if (me.canFortify()){
     return Action::fortify();
+  }
 
   return Action::idle();
 }
 
 
 // ------------------------------- Virus B - Orange ---------------------------
-// FORTRESS. Thickens every cell to Strong before it bothers expanding, so its
-// territory costs three attacks a tile to take. Slow to spread, hard to kill,
-// and its strength total wins a match that ends level on cells.
 Decision decideB(const Cell& me, const World& world) {
   (void)world;
+
+  // Our direction variable
   Dir d = Dir::N;
 
-  // Walls first, and at 1 energy a fortify is affordable long before a grow.
-  if (me.strength < Strength::Strong)
-    return me.canAfford(Action::fortify()) ? Action::fortify() : Action::idle();
+  // If there is open ground, and we have enough energy to grow into it, do so.
+  if (me.findOpen(d) && me.canGrow(d)){
+    return Action::grow(d);
+  }
 
-  if (me.findOpen(d))                                                  // then take ground
-    return me.canAfford(Action::grow(d)) ? Action::grow(d) : Action::idle();
+  // No where to grow, attack the strongest enemy.
+  if (me.findStrongestEnemy(d) && me.canAttack(d)){
+    return Action::attack(d);
+  }
 
-  if (me.findWeakestEnemy(d) && me.canAfford(Action::attack(d))) return Action::attack(d);
-  if (me.strength < Strength::Strongest && me.canAfford(Action::fortify()))
+  // No where to grow, no where to attack, so fortify.
+  if (me.canFortify()){
     return Action::fortify();
+  }
 
   return Action::idle();
 }
 
 
 // ------------------------------- Virus C - Cyan -----------------------------
-// AGGRESSOR. Attacks a neighbouring enemy above all else, spending its energy
-// tearing down rivals instead of expanding. Dangerous in a crowd, slow solo --
-// and remember a kill only scorches the tile, it does not claim it.
 Decision decideC(const Cell& me, const World& world) {
   (void)world;
+
+  // Our direction variable
   Dir d = Dir::N;
 
-  // Fight on sight. An attack costs 1, so a frontier cell can nearly always pay
-  // for one, which is what makes this virus relentless.
-  if (me.findWeakestEnemy(d) && me.canAfford(Action::attack(d))) return Action::attack(d);
+  // If there is open ground, and we have enough energy to grow into it, do so.
+  if (me.findOpen(d) && me.canGrow(d)){
+    return Action::grow(d);
+  }
 
-  if (me.findOpen(d))                                                  // else grab ground
-    return me.canAfford(Action::grow(d)) ? Action::grow(d) : Action::idle();
+  // No where to grow, attack the strongest enemy.
+  if (me.findStrongestEnemy(d) && me.canAttack(d)){
+    return Action::attack(d);
+  }
 
-  return Action::idle();   // nothing in reach: bank it for the next fight
+  // No where to grow, no where to attack, so fortify.
+  if (me.canFortify()){
+    return Action::fortify();
+  }
+
+  return Action::idle();
 }
 
 
 // ------------------------------- Virus D - Purple ---------------------------
-// NOMAD. Refuses to fight. It takes open ground where it can, and the moment an
-// enemy turns up next door it walks away rather than trade blows -- a move
-// costs 1 against an attack's 1, but it keeps the cell, its strength and its
-// savings, and leaves the aggressor hitting empty air. Sealed in with nowhere
-// to walk, it saves up and leaps the wall.
-//
-// Watch it on the panel: a whole flank peeling back a tile at a time is what
-// the Move action is for.
 Decision decideD(const Cell& me, const World& world) {
   (void)world;
+
+  // Our direction variable
   Dir d = Dir::N;
 
-  // Somebody is next door. If there is anywhere to go, go -- being somewhere
-  // else is always better than being in a fight this virus will not join.
-  if (me.countAdjacent(Occupant::Enemy) > 0 && me.findOpen(d) && me.canAfford(Action::move(d)))
-    return Action::move(d);
+  // If there is open ground, and we have enough energy to grow into it, do so.
+  if (me.findOpen(d) && me.canGrow(d)){
+    return Action::grow(d);
+  }
 
-  // Otherwise expand, saving up for the claim if it cannot pay yet.
-  if (me.findOpen(d))
-    return me.canAfford(Action::grow(d)) ? Action::grow(d) : Action::idle();
+  // No where to grow, attack the strongest enemy.
+  if (me.findStrongestEnemy(d) && me.canAttack(d)){
+    return Action::attack(d);
+  }
 
-  // Walled in on all four sides: bank until it can leap out. At 6 energy from
-  // one cell's share that is a long wait for a big virus and a short one for a
-  // small virus -- which is exactly when this virus needs it most.
-  if (me.findSporeTarget(d) && me.canAfford(Action::spore(d))) return Action::spore(d);
+  // No where to grow, no where to attack, so fortify.
+  if (me.canFortify()){
+    return Action::fortify();
+  }
 
   return Action::idle();
 }
