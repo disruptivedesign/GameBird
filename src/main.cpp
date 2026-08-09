@@ -53,7 +53,7 @@ Swarm        swarm(&sys.audio);
 Multiplayer  swarmMulti(sys, &swarm);
 SinglePlayer swarmSolo(sys, &swarm);            // you plus one AI wingman
 SwarmApp     swarmApp(sys, swarm, swarmMulti, swarmSolo);
-Virus        virusGame;                         // programmable cellular game (NetGame)
+Virus        virusGame(&sys.audio);             // programmable cellular game (NetGame)
 VirusApp     virusApp(sys, virusGame);          // single-device: your four, against each other
 // A second Multiplayer, bound to Virus. One runner per networked game rather
 // than one shared: a runner is built around the game it drives, and only one

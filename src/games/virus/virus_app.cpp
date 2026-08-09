@@ -194,44 +194,6 @@ void VirusApp::startMatch() {
   _state       = COUNTDOWN;
 }
 
-// ============================================================================
-//  One tick, one sound -- across the whole board.
-//
-//  The referee hands us counts, not events (Virus::TickEvents), because a virus
-//  can grow a dozen cells in a single 180 ms tick and twelve blips would be a
-//  machine gun. So this collapses twice:
-//
-//    1. WITHIN a virus, biggest event wins -- losing a cell outranks landing a
-//       hit, which outranks taking ground. A virus says one thing per tick.
-//    2. ACROSS the four viruses, highest priority wins, ties to the lower slot.
-//       Exactly one Audio::play() call leaves this function.
-//
-//  This is a spectator game: every virus on the board was authored locally, so
-//  every virus is audible. (Networked Virus would restrict this to _myId --
-//  see the audio design record.)
-// ============================================================================
-void VirusApp::playTickVoices() {
-  const Sfx* best = nullptr;
-
-  for (uint8_t p = 0; p < _numPlayers; p++) {
-    const VirusVoice* v = _voice[p];
-    if (!v) continue;
-    const Virus::TickEvents& e = _game.events(p);
-
-    const Sfx* cand = nullptr;
-    if      (e.lost     && v->onCellLost) cand = v->onCellLost;
-    else if (e.spored   && v->onSpore)    cand = v->onSpore;
-    else if (e.damaged  && v->onDamaged)  cand = v->onDamaged;
-    else if (e.moved    && v->onMoved)    cand = v->onMoved;
-    else if (e.attacked && v->onAttack)   cand = v->onAttack;
-    else if (e.grew     && v->onGrow)     cand = v->onGrow;
-
-    if (cand && (!best || cand->priority > best->priority)) best = cand;
-  }
-
-  if (best) _sys.audio.play(*best);
-}
-
 void VirusApp::servicePlaying(uint32_t now) {
   if (_sys.buttonB.wasPressed()) { endSeriesEarly(); return; }   // end the series, keep the tally
 
@@ -240,7 +202,6 @@ void VirusApp::servicePlaying(uint32_t now) {
     // ButtonState in virus_api.h.
     _game.setButtonA(_sys.buttonA.isHeld());
     _game.hostTick();
-    playTickVoices();
     _lastTick = now;
   }
 

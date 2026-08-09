@@ -1,4 +1,5 @@
 #include "virus.h"
+#include "virus_voice.h"      // VIRUS_VOICES -- what speak() plays
 #include "core/palette.h"
 #include <string.h>
 
@@ -392,6 +393,73 @@ static_assert((VIRUS_MAX_CELLS + 1) / 2 <= NET_PRIV_MAX,
 
 size_t Virus::energyBytes(int cells) { return ((size_t)cells + 1) / 2; }
 
+// ---- what a virus just did, in six bits ------------------------------------
+// A voice only asks whether a thing happened, never how often, so the counts
+// collapse to flags. Two of them -- an attack landing, a spore going out -- are
+// things NO amount of comparing one board against the next can recover: a
+// client can see a cell lose strength but not who hit it. That is why these
+// travel rather than being worked out at the far end.
+// ============================================================================
+//  The tick's one sound.
+//
+//  Two rules, unchanged from when this lived in VirusApp:
+//    1. WITHIN a virus, the loudest thing it did wins -- losing a cell outranks
+//       taking one. A virus says one thing per tick.
+//    2. ACROSS the slots, highest priority wins. Exactly one play() leaves here.
+//
+//  WHICH slots, though, is the whole difference between the two ways to play,
+//  and `_tag` already draws the line without being asked to. On one device
+//  setRoster() names all four viruses, so all four are audible -- it is a
+//  spectator game and every virus on the board was authored right here. In a
+//  networked match only this device's own slot gets a letter and the rest stay
+//  '?', so a player hears their own virus and nothing else. That is the split
+//  the audio design record called for, and it falls out of asking "do I know
+//  what this slot is running" rather than out of a mode flag.
+// ============================================================================
+void Virus::speak() {
+  if (!_audio) return;
+
+  const Sfx* best = nullptr;
+  for (uint8_t p = 0; p < _numPlayers && p < NET_MAX_PLAYERS; p++) {
+    const char t = _tag[p];
+    if (t < 'A' || t > 'D') continue;             // not ours to speak for
+    const VirusVoice* v = VIRUS_VOICES[t - 'A'];
+    if (!v) continue;
+    const TickEvents& e = _ev[p];
+
+    const Sfx* cand = nullptr;
+    if      (e.lost     && v->onCellLost) cand = v->onCellLost;
+    else if (e.spored   && v->onSpore)    cand = v->onSpore;
+    else if (e.damaged  && v->onDamaged)  cand = v->onDamaged;
+    else if (e.moved    && v->onMoved)    cand = v->onMoved;
+    else if (e.attacked && v->onAttack)   cand = v->onAttack;
+    else if (e.grew     && v->onGrow)     cand = v->onGrow;
+
+    if (cand && (!best || cand->priority > best->priority)) best = cand;
+  }
+
+  if (best) _audio->play(*best);
+}
+
+uint8_t Virus::packEvents(uint8_t playerId) const {
+  if (playerId >= NET_MAX_PLAYERS) return 0;
+  const TickEvents& e = _ev[playerId];
+  return (uint8_t)((e.grew     ? 0x01 : 0) | (e.attacked ? 0x02 : 0) |
+                   (e.damaged  ? 0x04 : 0) | (e.lost     ? 0x08 : 0) |
+                   (e.moved    ? 0x10 : 0) | (e.spored   ? 0x20 : 0));
+}
+
+void Virus::unpackEvents(uint8_t playerId, uint8_t bits) {
+  if (playerId >= NET_MAX_PLAYERS) return;
+  TickEvents& e = _ev[playerId];
+  e.grew     = (bits & 0x01) ? 1 : 0;
+  e.attacked = (bits & 0x02) ? 1 : 0;
+  e.damaged  = (bits & 0x04) ? 1 : 0;
+  e.lost     = (bits & 0x08) ? 1 : 0;
+  e.moved    = (bits & 0x10) ? 1 : 0;
+  e.spored   = (bits & 0x20) ? 1 : 0;
+}
+
 size_t Virus::serializePrivate(uint8_t playerId, uint8_t* buf, size_t cap) {
   if (playerId >= NET_MAX_PLAYERS) return 0;
 
@@ -400,7 +468,10 @@ size_t Virus::serializePrivate(uint8_t playerId, uint8_t* buf, size_t cap) {
   const int n = collectOwned(_owner, (uint8_t)(playerId + 1), _owned);
   if (!n) return 0;
 
-  const size_t need = energyBytes(n);
+  // Energy for the tick about to happen, then a byte of what just happened.
+  // Two different moments in one frame, deliberately: they are the two things
+  // this player alone needs, and they are already going to this player alone.
+  const size_t need = energyBytes(n) + 1;
   if (cap < need) return 0;
   memset(buf, 0, need);
 
@@ -409,11 +480,15 @@ size_t Virus::serializePrivate(uint8_t playerId, uint8_t* buf, size_t cap) {
     const uint8_t e = (uint8_t)(creditedBank(_cellBank[_owned[i]], share) / ENERGY_ONE);
     buf[i >> 1] |= (uint8_t)((e & 0x0F) << ((i & 1) ? 4 : 0));
   }
+  buf[need - 1] = packEvents(playerId);
   return need;
 }
 
 void Virus::applyPrivate(const uint8_t* buf, size_t len) {
   memset(_netEnergy, 0, sizeof(_netEnergy));
+  // Cleared before the length check, so a frame that never arrives is silence
+  // rather than last tick's sound played twice.
+  if (_myId < NET_MAX_PLAYERS) _ev[_myId] = TickEvents{};
   if (_myId >= NET_MAX_PLAYERS) return;
 
   const int n = collectOwned(_owner, (uint8_t)(_myId + 1), _owned);
@@ -421,10 +496,17 @@ void Virus::applyPrivate(const uint8_t* buf, size_t len) {
   // board, and its nibbles line up with somebody else's cells. Drop it whole:
   // every cell then reads 0 energy and idles, which is the same safe reading a
   // missing decision list gets.
-  if (!n || len != energyBytes(n)) return;
+  if (!n || len != energyBytes(n) + 1) return;
 
   for (int i = 0; i < n; i++)
     _netEnergy[_owned[i]] = (uint8_t)((buf[i >> 1] >> ((i & 1) ? 4 : 0)) & 0x0F);
+
+  // The host's own account of the tick just drawn. This is the client's only
+  // chance to speak, so it happens here rather than in applyState: the board
+  // arrives first and the events a moment later, and voicing the board alone
+  // would miss the two things it cannot see.
+  unpackEvents(_myId, buf[len - 1]);
+  speak();
 }
 
 void Virus::applyInput(uint8_t playerId, const uint8_t* buf, size_t len) {
@@ -636,6 +718,7 @@ void Virus::hostTick() {
   _tickWallMs = millis();   // render-only: start of this tick's combat flashes
   _tick++;
   evaluateEnd();       // scoring + stalemate detection (per-player count window)
+  speak();             // one sound for the tick, from the events it produced
 
 #if VIRUS_TELEMETRY
   // One line per tick: each virus's cells, total strength, banked energy across
@@ -989,7 +1072,14 @@ void Virus::applyState(const uint8_t* buf, size_t len) {
   _numPlayers = buf[o++];
   _arenaW     = buf[o++];
   _arenaH     = buf[o++];
+  const uint16_t prevTick = _tick;
   _tick       = (uint16_t)(buf[o] | (buf[o + 1] << 8)); o += 2;
+
+  // A board that has actually moved on is a new tick's worth of combat to draw.
+  // The same board arriving twice is a retransmit, and rebuilding the flashes
+  // off it would restart every pulse and leave them lit far longer than the
+  // 60 ms they are supposed to last.
+  const bool advanced = (_tick != prevTick);
 
   // Arena dimensions arrive off the wire, so a corrupt or mismatched frame
   // could otherwise index past the boards.
@@ -1006,8 +1096,24 @@ void Virus::applyState(const uint8_t* buf, size_t len) {
       (uint8_t)( (b2 >> 2)  & 0x3F),
     };
     for (int k = 0; k < 4 && c + k < N; k++) {
-      _owner[c + k]    = (uint8_t)( q[k]       & 0x07);
-      _strength[c + k] = (uint8_t)((q[k] >> 3) & 0x07);
+      const int     cc = c + k;
+      const uint8_t po = _owner[cc], ps = _strength[cc];      // the board this replaces
+      const uint8_t no = (uint8_t)( q[k]       & 0x07);
+      const uint8_t ns = (uint8_t)((q[k] >> 3) & 0x07);
+      _owner[cc]    = no;
+      _strength[cc] = ns;
+
+      // The combat flashes, recovered by comparing the two boards. A client
+      // never runs commitTick(), where the host fills these in, so without this
+      // the panel simply never pulses -- the same hole the cell counts below
+      // used to have. Both are exact: a cell of somebody's that turned to
+      // scorched ground was killed, and one that kept its owner and lost
+      // strength was hit and lived. Nothing here needs to know WHO did it,
+      // which is precisely why the flashes can be derived and the voices cannot.
+      if (!advanced) continue;
+      if      (po >= 1 && po <= 4 && no == OWNER_NEUTRAL) _fx[cc] = FX_DIED;
+      else if (po == no && po >= 1 && po <= 4 && ns < ps) _fx[cc] = FX_DAMAGED;
+      else                                                _fx[cc] = 0;
     }
   }
 
@@ -1021,4 +1127,9 @@ void Virus::applyState(const uint8_t* buf, size_t len) {
     const uint8_t o = _owner[c];
     if (o >= 1 && o <= _numPlayers && o <= NET_MAX_PLAYERS) _cells[o - 1]++;
   }
+
+  // Starts the fade on the flashes just derived. render() measures from here,
+  // so without it every pulse would be stuck at whatever age the host's last
+  // local tick left behind.
+  if (advanced) _tickWallMs = millis();
 }

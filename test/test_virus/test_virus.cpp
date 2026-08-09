@@ -63,7 +63,10 @@ struct Scenario {
     game.begin(W, H, 0, numPlayers, 0xC0FFEE, nullptr);
   }
 
-  void load(uint8_t numPlayers) {
+  // `tick` matters only to a test that loads two boards in a row and cares
+  // about the combat flashes: a client rebuilds those from the difference
+  // between consecutive boards, and treats a repeated tick as a retransmit.
+  void load(uint8_t numPlayers, uint16_t tick = 0) {
     uint8_t buf[512];
     size_t  o = 0;
     buf[o++] = 0;            // phase: running
@@ -71,7 +74,7 @@ struct Scenario {
     buf[o++] = numPlayers;
     buf[o++] = W;
     buf[o++] = H;
-    buf[o++] = 0; buf[o++] = 0;   // tick
+    buf[o++] = (uint8_t)(tick & 0xFF); buf[o++] = (uint8_t)(tick >> 8);
     for (int c = 0; c < N; c += 4) {
       uint8_t q[4] = { 0, 0, 0, 0 };
       for (int k = 0; k < 4 && c + k < N; k++)
@@ -683,7 +686,9 @@ void test_energy_report_round_trips(void) {
 
   uint8_t pb[NET_PRIV_MAX];
   size_t  pn = s.game.serializePrivate(0, pb, sizeof(pb));
-  TEST_ASSERT_EQUAL_size_t(Virus::energyBytes(4), pn);
+  // The nibbles, then one byte of what this virus just did -- the events a
+  // client cannot work out from the board alone. See Virus::packEvents.
+  TEST_ASSERT_EQUAL_size_t(Virus::energyBytes(4) + 1, pn);
 
   // Four cells splitting an income of 4 is one whole unit each, credited before
   // the tick -- so that is what the report has to say.
@@ -698,7 +703,11 @@ void test_worst_case_lists_fit_their_frames(void) {
   const size_t e = Virus::energyBytes(VIRUS_MAX_CELLS);
   TEST_ASSERT_EQUAL_size_t(160, d);
   TEST_ASSERT_TRUE_MESSAGE(d <= NET_INPUT_MAX, "decision list exceeds NET_INPUT_MAX");
-  TEST_ASSERT_TRUE_MESSAGE(e <= NET_PRIV_MAX,  "energy report exceeds NET_PRIV_MAX");
+  // The +1 is the event byte the report carries for the voices. Asserted on the
+  // real frame size rather than on `e`, because `e` alone fitting is what this
+  // test used to say right up until the byte was added and it stopped being the
+  // question worth asking.
+  TEST_ASSERT_TRUE_MESSAGE(e + 1 <= NET_PRIV_MAX, "energy report exceeds NET_PRIV_MAX");
   TEST_ASSERT_TRUE_MESSAGE(d + sizeof(NetHeader) <= NET_MAX_PAYLOAD,
                            "decision frame exceeds the ESP-NOW payload cap");
 }
@@ -997,6 +1006,95 @@ void test_every_round_of_a_series_has_its_own_opening(void) {
   }
 }
 
+// ---- what a client works out for itself -------------------------------------
+
+// The white pulse on a kill and the red one on a hit are filled in by
+// commitTick(), which a CLIENT never runs -- so on a client the panel used to
+// stay flat while the host's flashed. Both are exactly recoverable by comparing
+// the board that arrived against the one it replaced: somebody's cell that
+// turned to scorched ground was killed, and one that kept its owner and lost
+// strength was hit and lived. Neither needs to know who did it.
+void test_a_client_flashes_the_combat_it_never_simulated(void) {
+  static const RuleFn rules[] = { nullptr, nullptr };   // a client runs no rules
+  Scenario s;
+  s.clear();
+  s.put(3, 3, 1, 2);              // player 1, about to be killed
+  s.put(5, 5, 2, 3);              // player 2, about to be hit and survive
+  s.put(1, 1, 1, 1);              // a bystander, so nothing else moves
+  s.start(rules, 2);
+  s.load(2, 1);
+
+  s.clear();
+  s.put(3, 3, OWNER_NEUTRAL, 0);  // killed: the tile is scorched now
+  s.put(5, 5, 2, 2);              // same owner, a point of strength gone
+  s.put(1, 1, 1, 1);
+  s.load(2, 2);
+
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(Virus::FX_DIED, s.game.tFxAt(3, 3),
+    "no white pulse where a cell was killed");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(Virus::FX_DAMAGED, s.game.tFxAt(5, 5),
+    "no red pulse where a cell took a hit and lived");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, s.game.tFxAt(1, 1),
+    "a cell nothing happened to was flashed anyway");
+}
+
+// The same board arriving twice is a retransmit, not a second tick's worth of
+// combat. Rebuilding off it would restart every pulse and leave the panel lit
+// far longer than the 60 ms a flash is meant to last.
+void test_a_repeated_board_does_not_restart_the_flashes(void) {
+  static const RuleFn rules[] = { nullptr, nullptr };
+  Scenario s;
+  s.clear();
+  s.put(3, 3, 1, 2);
+  s.put(6, 6, 2, 1);
+  s.start(rules, 2);
+  s.load(2, 1);
+
+  s.clear();
+  s.put(3, 3, OWNER_NEUTRAL, 0);
+  s.put(6, 6, 2, 1);
+  s.load(2, 2);
+  TEST_ASSERT_EQUAL_UINT8(Virus::FX_DIED, s.game.tFxAt(3, 3));
+
+  s.load(2, 2);                   // the very same tick, delivered again
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(Virus::FX_DIED, s.game.tFxAt(3, 3),
+    "a retransmit cleared the flash it should have left alone");
+}
+
+// Two of the six events -- an attack landing, a spore going out -- cannot be
+// recovered from the boards at all: a client sees a cell lose strength but not
+// who hit it. So they ride in the per-player report, and this is the round trip
+// that proves a client ends up with what the host actually saw.
+void test_the_energy_report_carries_what_the_virus_just_did(void) {
+  static const RuleFn rules[] = { ruleAttack, nullptr };
+  Scenario host;
+  host.clear();
+  host.put(2, 2, 1, 2);
+  host.put(2, 1, 2, 3);           // an enemy directly north, to attack
+  host.start(rules, 2);
+  host.load(2);
+  host.tick();                    // player 1 attacks; player 2 is damaged
+
+  TEST_ASSERT_TRUE_MESSAGE(host.game.events(0).attacked,
+    "the setup did not actually produce an attack");
+
+  uint8_t pb[NET_PRIV_MAX];
+  const size_t pn = host.game.serializePrivate(0, pb, sizeof(pb));
+  TEST_ASSERT_TRUE(pn > 0);
+
+  // A second device, told it is player 0, adopting the same board.
+  Scenario client;
+  client.clear();
+  client.put(2, 2, 1, 2);
+  client.put(2, 1, 2, 3);
+  client.start(rules, 2);
+  client.load(2);
+  client.game.applyPrivate(pb, pn);
+
+  TEST_ASSERT_TRUE_MESSAGE(client.game.events(0).attacked,
+    "the attack never reached the client that made it");
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -1036,5 +1134,8 @@ int main(int, char**) {
   RUN_TEST(test_rotating_the_scan_levels_out_the_corners);
   RUN_TEST(test_series_length_is_clamped_to_something_playable);
   RUN_TEST(test_every_round_of_a_series_has_its_own_opening);
+  RUN_TEST(test_a_client_flashes_the_combat_it_never_simulated);
+  RUN_TEST(test_a_repeated_board_does_not_restart_the_flashes);
+  RUN_TEST(test_the_energy_report_carries_what_the_virus_just_did);
   return UNITY_END();
 }

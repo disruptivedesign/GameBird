@@ -43,7 +43,10 @@ private:
   uint32_t _cdStart = 0, _resultStart = 0, _lastTick = 0;
 
   // Voices for the roster, indexed by player slot (not by virus letter), plus
-  // the one signature this match will play. See playTickVoices().
+  // the one signature this match will play. The per-tick voices moved into
+  // Virus::speak() so a networked match gets them too; what is left here is the
+  // countdown signature and the winner's fanfare, which are the runner's to
+  // play because only it knows a match has started or ended.
   const VirusVoice* _voice[NET_MAX_PLAYERS] = { nullptr };
   const Sfx*        _signature = nullptr;
 
@@ -56,6 +59,5 @@ private:
   void    serviceSetup();
   void    servicePlaying(uint32_t now);
   void    serviceResult(uint32_t now);
-  void    playTickVoices();
   void    serviceSeriesOver(uint32_t now);
 };

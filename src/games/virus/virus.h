@@ -1,6 +1,7 @@
 #pragma once
 #include "net/net_game.h"
 #include "net/net_proto.h"     // NET_MAX_PLAYERS, NET_PID_NONE
+#include "audio/audio.h"
 #include "virus_api.h"
 #include "virus_rules.h"
 
@@ -55,6 +56,13 @@
 
 class Virus : public NetGame {
 public:
+  // Takes the piezo directly, for the same reason Swarm does: a NetGame gets no
+  // System, and the things a virus has to say -- a cell taken, a cell lost, a
+  // spore going out -- are known only inside the referee. Handing it here is
+  // what makes a networked match audible at all, since the runner driving one
+  // is game-agnostic and could not know to play any of it.
+  explicit Virus(Audio* audio = nullptr) : _audio(audio) {}
+
   uint8_t gameId()     const override { return 2; }
   uint8_t maxPlayers() const override { return 4; }
   Icon    menuIcon()   const override;
@@ -160,6 +168,16 @@ public:
     return _ev[playerId < NET_MAX_PLAYERS ? playerId : 0];
   }
 
+  // The combat flash on one tile. Public for the same reason SwarmSim's t*
+  // hooks are: the flashes a CLIENT shows are worked out from two boards rather
+  // than simulated, and that derivation is worth pinning down.
+  static constexpr uint8_t FX_DAMAGED = 0x01;   // lost strength but survived
+  static constexpr uint8_t FX_DIED    = 0x02;   // was killed (tile is Neutral now)
+  uint8_t tFxAt(int x, int y) const {
+    const int c = y * _arenaW + x;
+    return (c >= 0 && c < VIRUS_MAX_CELLS) ? _fx[c] : 0;
+  }
+
   // Live standings, for the territory bar. Counted every tick by evaluateEnd()
   // whether anyone asks or not, so this is a read of existing work.
   uint16_t cellCount(uint8_t playerId) const {
@@ -180,6 +198,16 @@ private:
   uint8_t  _myId = 0, _numPlayers = 0;
   uint8_t  _opening = 0;                  // which fixed layout begin() seeds
   uint8_t  _rounds  = VIRUS_ROUNDS_DEFAULT;   // matches in this series
+  Audio*   _audio   = nullptr;
+
+  // One sound for the tick just finished, chosen across every slot this device
+  // has a voice for. See the comment on the definition.
+  void     speak();
+
+  // The six TickEvents flags packed into a byte, so the host can tell one client
+  // what its own virus just did. Only truth matters to a voice, not the count.
+  uint8_t  packEvents(uint8_t playerId) const;
+  void     unpackEvents(uint8_t playerId, uint8_t bits);
   uint16_t _tick = 0;
   uint8_t  _phase = 0;                    // 0 = running, 1 = over
   uint8_t  _winner = NET_PID_NONE;
@@ -256,8 +284,7 @@ private:
   // What happened to each cell on the tick just committed, so render() can
   // flash it. Rebuilt every tick and never read by the simulation, never
   // serialized -- determinism does not depend on any of this.
-  static constexpr uint8_t FX_DAMAGED = 0x01;   // lost strength but survived
-  static constexpr uint8_t FX_DIED    = 0x02;   // was killed (tile is Neutral now)
+  // FX_DAMAGED / FX_DIED are declared with tFxAt() up in the public section.
   uint8_t  _fx[VIRUS_MAX_CELLS] = { 0 };
   uint32_t _tickWallMs = 0;                     // millis() at the last tick; flash phase
 

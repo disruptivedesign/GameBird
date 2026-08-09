@@ -39,8 +39,18 @@
 // allows. virus.cpp static_asserts the derivation; it caught this being 144.
 #define NET_INPUT_MAX    160
 // Max per-player private state (MSG_PRIVSTATE). Virus needs 4 bits of banked
-// energy per owned cell, so 112 bytes worst case.
-#define NET_PRIV_MAX     128
+// energy per owned cell, plus one byte of what that player's virus just did --
+// the events a client cannot recover by comparing one board against the next,
+// which is what makes a networked match audible.
+//
+// Sized on the 256-cell panel rather than Virus's 224-cell arena, matching
+// NET_INPUT_MAX above and the 16x16 the wire format is tested at: 128 + 1 =
+// 129, rounded up. It was exactly 128 before this byte existed, so the worst
+// case fit with nothing to spare and the addition overflowed it -- silently,
+// since serializePrivate answers a frame it cannot fill with 0 and every cell
+// then reads no energy and idles. test_worst_case_lists_fit_their_frames is
+// what caught it.
+#define NET_PRIV_MAX     136
 // Largest control payload (lobby / join / joinack / start / scores). sendCtrl
 // builds its frame on the stack against this, and net.cpp static_asserts every
 // payload struct against it -- so adding a field, or a sixth player slot to
