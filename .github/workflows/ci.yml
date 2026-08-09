@@ -1,0 +1,55 @@
+# ============================================================================
+#  CI: build both firmware images and run the native test suites.
+#
+#  The native tests are the fast signal (~10 s) and the firmware builds are the
+#  slow one (~4 min cold), so tests run first and fail the job early.
+#
+#  Caches ~/.platformio, which holds the espressif32 toolchain and the FastLED
+#  and Unity downloads. Without it every run re-downloads several hundred MB of
+#  toolchain and takes many minutes; with it, a warm run is a couple.
+# ============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build firmware and run native tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      # Keyed on platformio.ini: the pioarduino platform URL and the FastLED
+      # version are both pinned there, so a change to either earns a fresh
+      # toolchain download and anything else reuses the warm cache.
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Native tests
+        run: pio test -e native   # Tron, Virus, Tetris, Breakout, Swarm, joystick
+
+      - name: Build firmware
+        run: pio run              # esp32s3_supermini
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: .pio/build/*/firmware.bin
